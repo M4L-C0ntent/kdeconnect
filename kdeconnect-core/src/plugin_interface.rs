@@ -54,10 +54,12 @@ impl PluginRegistry {
         packet: ProtocolPacket,
         core_tx: mpsc::UnboundedSender<CoreEvent>,
         tx: mpsc::UnboundedSender<ConnectionEvent>,
+        mpris_tx: mpsc::UnboundedSender<ConnectionEvent>,  // MPRIS channel
     ) {
         let body = packet.body.clone();
         let core_tx = core_tx.clone();
         let connection_tx = tx.clone();
+        let mpris_connection_tx = mpris_tx.clone();  // Clone MPRIS channel
         let payload_info = packet.payload_transfer_info;
 
         match packet.packet_type {
@@ -107,10 +109,13 @@ impl PluginRegistry {
             PacketType::Mpris => {
                 if let Ok(mpris_packet) = serde_json::from_value::<Mpris>(body) {
                     info!("Received MPRIS packet: {:?}", mpris_packet);
-                    let _ = connection_tx.send(ConnectionEvent::Mpris((
+                    let mpris_event = ConnectionEvent::Mpris((
                         device.device_id.clone(),
                         mpris_packet,
-                    )));
+                    ));
+                    // Send to both channels
+                    let _ = connection_tx.send(mpris_event.clone());
+                    let _ = mpris_connection_tx.send(mpris_event);
                 }
             }
             PacketType::MprisRequest => {
