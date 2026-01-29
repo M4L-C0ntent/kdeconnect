@@ -77,6 +77,12 @@ impl PluginRegistry {
                 }
             }
             PacketType::BatteryRequest => todo!(),
+            PacketType::SmsMessages => {
+                if let Ok(sms_messages) = serde_json::from_value::<plugins::sms::SmsMessages>(body) {
+                    info!("Received SMS messages packet");
+                    sms_messages.received_packet(connection_tx).await;
+                }
+            }
             PacketType::Clipboard => {
                 if let Ok(clipboard) = serde_json::from_value::<Clipboard>(body) {
                     clipboard.received_packet(connection_tx).await;
