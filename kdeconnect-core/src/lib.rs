@@ -116,6 +116,12 @@ impl KdeConnectCore {
         plugin_registry
             .register(Arc::new(share_request_plugin))
             .await;
+         // Add SMS plugin registration
+        let sms_plugin = plugins::sms::SmsMessages { 
+            messages: Vec::new(), 
+            version: None 
+        };
+        plugin_registry.register(Arc::new(sms_plugin)).await;
 
         Ok((
             Self {

@@ -3,6 +3,7 @@ use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::event::ConnectionEvent;
+use crate::plugin_interface::Plugin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmsMessages {
@@ -48,5 +49,11 @@ impl SmsMessages {
         
         let event = ConnectionEvent::SmsMessages(self.clone());
         let _ = tx.send(event);
+    }
+}
+
+impl Plugin for SmsMessages {
+    fn id(&self) -> &'static str {
+        "sms"
     }
 }

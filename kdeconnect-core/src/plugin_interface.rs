@@ -160,6 +160,7 @@ impl PluginRegistry {
                     let _ = share_request.receive_share(&device, payload_info).await;
                 }
             }
+
             _ => {
                 warn!(
                     "No plugin found to handle packet type: {:?}",
