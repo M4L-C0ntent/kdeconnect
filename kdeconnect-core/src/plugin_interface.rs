@@ -78,9 +78,14 @@ impl PluginRegistry {
             }
             PacketType::BatteryRequest => todo!(),
             PacketType::SmsMessages => {
-                if let Ok(sms_messages) = serde_json::from_value::<plugins::sms::SmsMessages>(body) {
-                    info!("Received SMS messages packet");
+                eprintln!("!!! Received SmsMessages packet in core !!!");
+                if let Ok(sms_messages) = serde_json::from_value::<plugins::sms::SmsMessages>(body.clone()) {
+                    info!("Received SMS messages packet with {} messages", sms_messages.messages.len());
+                    eprintln!("Successfully parsed {} SMS messages", sms_messages.messages.len());
                     sms_messages.received_packet(connection_tx).await;
+                } else {
+                    eprintln!("!!! Failed to parse SMS messages packet !!!");
+                    eprintln!("Body: {:?}", body);
                 }
             }
             PacketType::Clipboard => {
@@ -160,7 +165,6 @@ impl PluginRegistry {
                     let _ = share_request.receive_share(&device, payload_info).await;
                 }
             }
-
             _ => {
                 warn!(
                     "No plugin found to handle packet type: {:?}",
