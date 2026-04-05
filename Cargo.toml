@@ -14,7 +14,7 @@ license = "GPL-3.0-only"
 [workspace.dependencies]
 anyhow = "1.0"
 async-stream = "0.3"
-ashpd = { version = "0.13.3", features = ["file_chooser"] }
+ashpd = { version = "0.13.3", features = ["file_chooser", "screencast", "remote_desktop"] }
 ctrlc = "3.4"
 dirs = "6"
 futures = "0.3"

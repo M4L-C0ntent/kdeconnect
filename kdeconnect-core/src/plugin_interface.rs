@@ -18,6 +18,7 @@ use crate::{
         battery::Battery,
         clipboard::Clipboard,
         connectivity_report::ConnectivityReport,
+        mousepad::MousePadRequest,
         mpris::{Mpris, MprisRequest},
     },
     protocol::{PacketPayloadTransferInfo, PacketType, ProtocolPacket},
@@ -56,14 +57,14 @@ fn packet_plugin_id(pt: &PacketType) -> Option<&'static str> {
         | PacketType::SmsRequestConversation
         | PacketType::SmsAttachmentFile
         | PacketType::SmsRequestAttachment => Some("sms"),
+        PacketType::MousePadEcho
+        | PacketType::MousePadKeyboardState
+        | PacketType::MousePadRequest => Some("mousepad"),
         // Core / unmanaged packets are never gated
         PacketType::Identity
         | PacketType::Pair
         | PacketType::Lock
         | PacketType::LockRequest
-        | PacketType::MousePadEcho
-        | PacketType::MousePadKeyboardState
-        | PacketType::MousePadRequest
         | PacketType::Presenter
         | PacketType::Sftp
         | PacketType::SftpRequest
@@ -244,10 +245,19 @@ impl PluginRegistry {
                 }
             }
             PacketType::MousePadKeyboardState => {
-                if let Ok(keyboard_state) =
-                    serde_json::from_value::<plugins::mousepad::KeyboardState>(body)
-                {
-                    debug!("{:?}", keyboard_state);
+                // Phone is advertising its keyboard state; respond with ours
+                let state = plugins::mousepad::KeyboardState { state: Some(true) };
+                if let Ok(body) = serde_json::to_value(state) {
+                    let pkt = ProtocolPacket::new(PacketType::MousePadKeyboardState, body);
+                    let _ = core_tx.send(CoreEvent::SendPacket {
+                        device: device.device_id.clone(),
+                        packet: pkt,
+                    });
+                }
+            }
+            PacketType::MousePadRequest => {
+                if let Ok(request) = serde_json::from_value::<MousePadRequest>(body) {
+                    request.received_packet(&device, &core_tx).await;
                 }
             }
             PacketType::Mpris => {

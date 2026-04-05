@@ -116,6 +116,12 @@ fn implemented_plugins() -> Vec<PluginInfo> {
         description: fl!("plugin-sms-desc"),
         icon: "mail-message-new-symbolic",
     },
+    PluginInfo {
+        id: "mousepad",
+        name: fl!("plugin-mousepad-name"),
+        description: fl!("plugin-mousepad-desc"),
+        icon: "input-mouse-symbolic",
+    },
     ]
 }
 
