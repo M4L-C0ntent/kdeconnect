@@ -14,7 +14,7 @@ use crate::{
     filetransfer::TransferAdapter,
     pairing::PairingManager,
     plugin_interface::PluginRegistry,
-    plugins::{mousepad, ping::Ping, share::ShareRequest},
+    plugins::{ping::Ping, share::ShareRequest},
     protocol::{DeviceFile, DevicePayload, Pair},
     transport::{TcpTransport, TransportEvent, UdpTransport},
 };
@@ -286,12 +286,6 @@ impl KdeConnectCore {
                             serde_json::json!({}),
                         );
                         let _ = sender.send(contacts_pkt);
-
-                        let ks = mousepad::KeyboardState { state: Some(true) };
-                        if let Ok(body) = serde_json::to_value(ks) {
-                            let ks_pkt = ProtocolPacket::new(PacketType::MousePadKeyboardState, body);
-                            let _ = sender.send(ks_pkt);
-                        }
                     }
                     drop(guard);
                     // Send our local command list so the Android app shows

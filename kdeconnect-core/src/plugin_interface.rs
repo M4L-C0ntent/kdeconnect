@@ -245,14 +245,10 @@ impl PluginRegistry {
                 }
             }
             PacketType::MousePadKeyboardState => {
-                // Phone is advertising its keyboard state; respond with ours
-                let state = plugins::mousepad::KeyboardState { state: Some(true) };
-                if let Ok(body) = serde_json::to_value(state) {
-                    let pkt = ProtocolPacket::new(PacketType::MousePadKeyboardState, body);
-                    let _ = core_tx.send(CoreEvent::SendPacket {
-                        device: device.device_id.clone(),
-                        packet: pkt,
-                    });
+                if let Ok(keyboard_state) =
+                    serde_json::from_value::<plugins::mousepad::KeyboardState>(body)
+                {
+                    debug!("MousePad: keyboard state from phone: {:?}", keyboard_state);
                 }
             }
             PacketType::MousePadRequest => {
