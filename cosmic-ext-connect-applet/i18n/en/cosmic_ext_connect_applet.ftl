@@ -126,6 +126,5 @@ time-week-ago = More than a week ago
 # Misc
 device-unknown = Unknown Device
 file-picker-title = Select files to send
--e 
 # Notifications
 notification-pairing-summary = Pairing Request
