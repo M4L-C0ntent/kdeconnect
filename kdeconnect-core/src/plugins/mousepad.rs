@@ -124,52 +124,83 @@ enum InputEvent {
 }
 
 static INPUT_TX: OnceLock<Mutex<Option<mpsc::UnboundedSender<InputEvent>>>> = OnceLock::new();
+static PORTAL_SPAWNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn input_tx_store() -> &'static Mutex<Option<mpsc::UnboundedSender<InputEvent>>> {
     INPUT_TX.get_or_init(|| Mutex::new(None))
 }
 
 pub async fn ensure_remote_desktop() {
-    let mut guard = input_tx_store().lock().await;
-    if guard.is_some() {
+    // Fast path — portal already ready.
+    {
+        let guard = input_tx_store().lock().await;
+        if guard.is_some() {
+            return;
+        }
+    }
+
+    // Only spawn one setup task at a time.
+    if PORTAL_SPAWNED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<InputEvent>();
-
+    info!("MousePad: spawning RemoteDesktop task");
     tokio::spawn(async move {
-         use ashpd::desktop::remote_desktop::{KeyState, RemoteDesktop};
+        use std::sync::atomic::Ordering;
+        use ashpd::desktop::remote_desktop::{KeyState, RemoteDesktop};
+        use tokio::time::{Duration, timeout};
 
-        let rd = match RemoteDesktop::new().await {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("MousePad: RemoteDesktop portal unavailable: {}", e);
+        macro_rules! bail {
+            ($msg:literal, $e:expr) => {{
+                warn!($msg, $e);
+                PORTAL_SPAWNED.store(false, Ordering::SeqCst);
                 return;
-            }
-        };
-
-        let session = match rd.create_session(Default::default()).await {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("MousePad: create_session failed: {}", e);
+            }};
+            ($msg:literal) => {{
+                warn!($msg);
+                PORTAL_SPAWNED.store(false, Ordering::SeqCst);
                 return;
-            }
-        };
-
-        if let Err(e) = rd
-            .select_devices(&session, Default::default())
-            .await
-        {
-            warn!("MousePad: select_devices failed: {}", e);
-            return;
+            }};
         }
 
-        if let Err(e) = rd.start(&session, None, Default::default()).await {
-            warn!("MousePad: session start failed: {}", e);
-            return;
+        info!("MousePad: task started, calling RemoteDesktop::new()");
+        let rd = match timeout(Duration::from_secs(10), RemoteDesktop::new()).await {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => bail!("MousePad: RemoteDesktop::new() failed: {}", e),
+            Err(_) => bail!("MousePad: RemoteDesktop::new() timed out"),
+        };
+
+        info!("MousePad: calling create_session()");
+        let session = match timeout(Duration::from_secs(10), rd.create_session(Default::default())).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => bail!("MousePad: create_session failed: {}", e),
+            Err(_) => bail!("MousePad: create_session timed out"),
+        };
+
+        info!("MousePad: calling select_devices()");
+        match timeout(Duration::from_secs(10), rd.select_devices(&session, Default::default())).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => bail!("MousePad: select_devices failed: {}", e),
+            Err(_) => bail!("MousePad: select_devices timed out"),
+        }
+
+        // start() shows the permission dialog — allow up to 60 s for user response.
+        info!("MousePad: calling start() — permission dialog may appear");
+        match timeout(Duration::from_secs(60), rd.start(&session, None, Default::default())).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => bail!("MousePad: start failed: {}", e),
+            Err(_) => bail!("MousePad: start timed out"),
         }
 
         info!("MousePad: RemoteDesktop session ready");
+
+        // Only publish the sender now that the session is confirmed live.
+        let (tx, mut rx) = mpsc::unbounded_channel::<InputEvent>();
+        {
+            let mut guard = input_tx_store().lock().await;
+            *guard = Some(tx);
+        }
 
         while let Some(event) = rx.recv().await {
             let result = match event {
@@ -185,7 +216,7 @@ pub async fn ensure_remote_desktop() {
                 }
                 InputEvent::KeySym { keysym, pressed } => {
                     let state = if pressed { KeyState::Pressed } else { KeyState::Released };
-                    rd.notify_keyboard_keysym(&session, keysym as i32, state, Default::default()).await
+                    rd.notify_keyboard_keysym(&session, keysym, state, Default::default()).await
                 }
             };
             if let Err(e) = result {
@@ -193,11 +224,14 @@ pub async fn ensure_remote_desktop() {
             }
         }
 
-        debug!("MousePad: input channel closed");
+        // Channel closed — reset so the next mouse session can retry.
+        info!("MousePad: input channel closed, resetting state");
+        {
+            let mut guard = input_tx_store().lock().await;
+            *guard = None;
+        }
+        PORTAL_SPAWNED.store(false, Ordering::SeqCst);
     });
-
-    *guard = Some(tx);
-    info!("MousePad: input backend initialised");
 }
 
 async fn send_input(event: InputEvent) {
@@ -239,7 +273,9 @@ impl MousePadRequest {
         device: &Device,
         core_tx: &mpsc::UnboundedSender<CoreEvent>,
     ) {
+        info!("MousePad: calling ensure_remote_desktop");
         ensure_remote_desktop().await;
+        info!("MousePad: ensure_remote_desktop returned");
 
         // Mouse movement / scroll
         if let (Some(dx), Some(dy)) = (self.dx, self.dy) {

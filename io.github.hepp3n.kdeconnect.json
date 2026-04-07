@@ -17,7 +17,9 @@
         "--device=dri",
         "--share=network",
         "--filesystem=xdg-download",
-        "--filesystem=xdg-config/cosmic:rw"
+        "--filesystem=xdg-config/cosmic:rw",
+        "--talk-name=org.freedesktop.portal.Desktop",
+        "--talk-name=org.freedesktop.impl.portal.RemoteDesktop"
     ],
     "build-options": {
         "append-path": "/usr/lib/sdk/rust-stable/bin"

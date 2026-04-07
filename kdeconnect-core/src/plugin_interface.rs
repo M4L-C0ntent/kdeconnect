@@ -128,7 +128,7 @@ impl PluginRegistry {
                 .is_plugin_enabled(&device.device_id.0, plugin_id)
                 .await
             {
-                debug!(
+                info!(
                     "[plugin_registry] packet {:?} skipped — plugin '{}' disabled for {}",
                     packet.packet_type, plugin_id, device.device_id
                 );
@@ -141,6 +141,8 @@ impl PluginRegistry {
         let connection_tx = tx.clone();
         let mpris_connection_tx = mpris_tx.clone();
         let payload_info = packet.payload_transfer_info;
+
+        info!("[dispatch] packet type: {:?}", packet.packet_type);
 
         match packet.packet_type {
             PacketType::Identity => {
@@ -248,12 +250,15 @@ impl PluginRegistry {
                 if let Ok(keyboard_state) =
                     serde_json::from_value::<plugins::mousepad::KeyboardState>(body)
                 {
-                    debug!("MousePad: keyboard state from phone: {:?}", keyboard_state);
+                    info!("MousePad: keyboard state from phone: {:?}", keyboard_state);
                 }
             }
             PacketType::MousePadRequest => {
+                info!("MousePad: received request packet");
                 if let Ok(request) = serde_json::from_value::<MousePadRequest>(body) {
                     request.received_packet(&device, &core_tx).await;
+                } else {
+                    info!("MousePad: failed to deserialize request body");
                 }
             }
             PacketType::Mpris => {
@@ -317,8 +322,8 @@ impl PluginRegistry {
                 }
             }
             _ => {
-                debug!(
-                    "No plugin found to handle packet type: {:?}",
+                info!(
+                    "[dispatch] unhandled packet type: {:?}",
                     packet.packet_type
                 );
             }
