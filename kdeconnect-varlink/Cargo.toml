@@ -1,0 +1,13 @@
+[package]
+name = "kdeconnect-varlink"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+varlink = { version = "13", features = ["tokio"] }
+varlink_derive = "13"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+
+[build-dependencies]
+varlink_generator = "13"

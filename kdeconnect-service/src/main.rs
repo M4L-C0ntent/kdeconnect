@@ -1,9 +1,11 @@
 //! KDE Connect D-Bus Service Daemon
 
 use anyhow::Result;
-use tracing::info;
+use tokio::sync::broadcast;
+use tracing::{error, info};
 
 mod dbus_interface;
+mod varlink_server;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,12 +18,6 @@ async fn main() -> Result<()> {
 
     info!("KDE Connect service starting");
 
-    // Single-instance guard: request the well-known D-Bus name before touching
-    // any sockets or config files. DoNotQueue means a second instance exits
-    // immediately rather than racing on port binding or cert/key generation.
-    // The connection is scoped so it drops (releasing the name) before
-    // KdeConnectService::new() acquires it on its own connection — otherwise
-    // the two request_name calls on different connections would deadlock.
     {
         let guard_conn = zbus::Connection::session().await?;
         match guard_conn
@@ -42,10 +38,15 @@ async fn main() -> Result<()> {
                 return Err(e.into());
             }
         }
-    } // guard_conn drops here, name is released for KdeConnectService::new()
+    }
 
     let service = dbus_interface::KdeConnectService::new().await?;
     info!("D-Bus service started on io.github.hepp3n.kdeconnect");
+
+    // Spawn varlink server alongside D-Bus.
+    // broadcast channel capacity of 64 is enough for burst events from a single phone.
+    let (broadcast_tx, _) = broadcast::channel(64);
+    service.start_varlink(broadcast_tx);
 
     service.run().await?;
 

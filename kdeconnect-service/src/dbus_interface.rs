@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
-use tracing::{debug, error, info};
+use tokio::sync::{Mutex, broadcast, mpsc};
+use tracing::{debug, error, info, warn};
 use zbus::object_server::SignalEmitter;
 use zbus::{Connection, interface};
 
@@ -491,9 +491,7 @@ impl ContactsInterface {
 pub struct KdeConnectService {
     #[allow(dead_code)]
     connection: Connection,
-    #[allow(dead_code)]
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
-    #[allow(dead_code)]
     devices: Arc<Mutex<HashMap<String, DbusDevice>>>,
 }
 
@@ -507,6 +505,22 @@ impl KdeConnectService {
     /// - Session D-Bus closed: covers cosmic-session logout, where the session
     ///   daemon closes all connections without necessarily delivering SIGTERM to
     ///   processes it did not directly register.
+    pub fn start_varlink(
+        &self,
+        broadcast_tx: broadcast::Sender<crate::varlink_server::VarlinkEvent>,
+    ) {
+        let event_sender = self.event_sender.clone();
+        let devices = self.devices.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                crate::varlink_server::run_varlink_server(event_sender, devices, broadcast_tx)
+                    .await
+            {
+                warn!("Varlink server exited: {:?}", e);
+            }
+        });
+    }
+
     pub async fn run(&self) -> Result<()> {
         use futures::StreamExt;
         use tokio::signal::unix::{SignalKind, signal};

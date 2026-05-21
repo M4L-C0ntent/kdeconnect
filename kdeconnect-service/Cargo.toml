@@ -21,3 +21,7 @@ futures-util = { workspace = true }
 kdeconnect-core = { workspace = true }
 dirs = { workspace = true }
 ron = { workspace = true }
+kdeconnect-varlink = { path = "../kdeconnect-varlink" }
+varlink = { version = "13", features = ["tokio"] }
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }

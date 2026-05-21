@@ -1,4 +1,10 @@
-//! Backend interface using D-Bus client to communicate with kdeconnect-service
+//! Backend interface — varlink-first, D-Bus fallback.
+//!
+//! On a native install both transports are available. Inside a Flatpak sandbox
+//! D-Bus activation of kdeconnect-service does not work (the /app binary path
+//! is invisible to the host bus), so varlink via a well-known Unix socket path
+//! is the reliable path. D-Bus is kept for MPRIS2 and signal subscriptions
+//! which are COSMIC-native and cannot move.
 
 use anyhow::Result;
 use cosmic::iced::Subscription;
@@ -12,21 +18,142 @@ use tracing::{error, info, warn};
 use crate::models::Device;
 
 lazy_static::lazy_static! {
-    static ref CLIENT: Arc<Mutex<Option<Arc<KdeConnectClient>>>> = Arc::new(Mutex::new(None));
-    static ref DEVICE_CACHE: Arc<Mutex<HashMap<String, Device>>> = Arc::new(Mutex::new(HashMap::new()));
+    /// Active D-Bus client — kept for MPRIS2, signals, and SMS/contacts
+    /// which are not yet routed through varlink.
+    static ref CLIENT: Arc<Mutex<Option<Arc<KdeConnectClient>>>> =
+        Arc::new(Mutex::new(None));
+
+    static ref DEVICE_CACHE: Arc<Mutex<HashMap<String, Device>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    /// Varlink socket address when the service is reachable that way.
+    /// `None` means fall through to D-Bus for all calls.
+    static ref VARLINK_ADDR: Arc<Mutex<Option<String>>> =
+        Arc::new(Mutex::new(None));
 }
 
-/// Initialize the D-Bus client connection
+// ---------------------------------------------------------------------------
+// Initialisation
+// ---------------------------------------------------------------------------
+
+/// Probe varlink socket first; fall back to D-Bus session bus.
+/// Both transports are connected when available so that D-Bus signals
+/// (MPRIS2, transfer progress) keep working even when commands go via varlink.
 pub async fn initialize() -> Result<()> {
-    info!("Initializing D-Bus client");
-    let client = KdeConnectClient::new().await?;
-    *CLIENT.lock().await = Some(Arc::new(client));
-    info!("D-Bus client connected to kdeconnect-service");
+    let addr = kdeconnect_varlink::socket_address();
+
+    match varlink::AsyncConnection::with_address(&addr).await {
+        Ok(_probe) => {
+            info!("Varlink socket reachable at {}", addr);
+            *VARLINK_ADDR.lock().await = Some(addr);
+
+            // Still connect D-Bus for MPRIS2 and signal subscriptions.
+            match KdeConnectClient::new().await {
+                Ok(client) => {
+                    *CLIENT.lock().await = Some(Arc::new(client));
+                    info!("D-Bus client also connected (MPRIS2/signals)");
+                }
+                Err(e) => {
+                    warn!("D-Bus unavailable, varlink-only mode: {:?}", e);
+                }
+            }
+        }
+        Err(e) => {
+            warn!("Varlink not available ({}), D-Bus only", e);
+            let client = KdeConnectClient::new().await?;
+            *CLIENT.lock().await = Some(Arc::new(client));
+            info!("D-Bus client connected to kdeconnect-service");
+        }
+    }
+
     Ok(())
 }
 
-/// Fetch all devices from the service
+// ---------------------------------------------------------------------------
+// Varlink helpers
+// ---------------------------------------------------------------------------
+
+/// Open a fresh varlink connection and run `f` against it.
+/// Returns `None` when varlink is not configured (D-Bus mode).
+/// Returns `Some(Err(...))` on connection or call failure.
+async fn via_varlink<F, Fut, T>(f: F) -> Option<Result<T>>
+where
+    F: FnOnce(kdeconnect_varlink::iface::VarlinkClient) -> Fut,
+    Fut: std::future::Future<Output = varlink::Result<T>>,
+{
+    let addr = VARLINK_ADDR.lock().await.clone()?;
+    match varlink::AsyncConnection::with_address(&addr).await {
+        Ok(conn) => Some(
+            f(kdeconnect_varlink::iface::VarlinkClient::new(conn))
+                .await
+                .map_err(|e| anyhow::anyhow!("varlink: {:?}", e)),
+        ),
+        Err(e) => {
+            warn!("Varlink reconnect failed: {:?}", e);
+            None // let caller fall through to D-Bus
+        }
+    }
+}
+
+/// Convenience: require an initialized D-Bus client or return an error.
+macro_rules! dbus_client {
+    ($guard:ident) => {
+        match $guard.as_ref() {
+            Some(c) => c,
+            None => return Err(anyhow::anyhow!("D-Bus client not initialized")),
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Device list
+// ---------------------------------------------------------------------------
+
 pub async fn fetch_devices() -> Vec<Device> {
+    // Varlink path
+    if let Some(Ok(reply)) = via_varlink(|c| async move {
+        use kdeconnect_varlink::iface::VarlinkClientInterface;
+        c.list_devices().call().await
+    })
+    .await
+    {
+        let mut cache = DEVICE_CACHE.lock().await;
+        let devices: Vec<Device> = reply.devices.into_iter().map(|d| {
+            let existing = cache.get(&d.id).cloned();
+            let device = Device {
+                id: d.id.clone(),
+                name: d.name.clone(),
+                device_type: d.device_type.clone(),
+                is_paired: d.is_paired,
+                is_reachable: d.is_reachable,
+                battery_level: existing.as_ref().and_then(|e| e.battery_level),
+                is_charging: existing.as_ref().and_then(|e| e.is_charging),
+                network_type: existing.as_ref().and_then(|e| e.network_type.clone()),
+                signal_strength: existing.as_ref().and_then(|e| e.signal_strength),
+                pairing_requests: 0,
+                has_battery: false,
+                has_ping: true,
+                has_sms: true,
+                has_contacts: false,
+                has_clipboard: true,
+                has_findmyphone: true,
+                has_share: true,
+                share_progress: existing.as_ref().and_then(|e| e.share_progress),
+                has_sftp: false,
+                has_mpris: false,
+                has_remote_keyboard: false,
+                has_presenter: false,
+                has_lockdevice: false,
+                has_virtualmonitor: false,
+                run_commands: existing.as_ref().map(|e| e.run_commands.clone()).unwrap_or_default(),
+            };
+            cache.insert(d.id.clone(), device.clone());
+            device
+        }).collect();
+        return devices;
+    }
+
+    // D-Bus fallback
     let client_guard = CLIENT.lock().await;
     let Some(client) = client_guard.as_ref() else {
         warn!("D-Bus client not initialized");
@@ -80,110 +207,146 @@ pub async fn fetch_devices() -> Vec<Device> {
     }
 }
 
-/// Update device in cache
+// ---------------------------------------------------------------------------
+// Cache helpers
+// ---------------------------------------------------------------------------
+
 pub async fn update_device(device_id: String, device: Device) {
     DEVICE_CACHE.lock().await.insert(device_id, device);
 }
 
-/// Remove device from cache
 #[allow(dead_code)]
 pub async fn remove_device(device_id: &str) {
     DEVICE_CACHE.lock().await.remove(device_id);
 }
 
-/// Pair with a device
+// ---------------------------------------------------------------------------
+// Commands — varlink-first, D-Bus fallback
+// ---------------------------------------------------------------------------
+
 pub async fn pair_device(device_id: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.pair_device(&device_id).await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.pair_device(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).pair_device(&device_id).await
 }
 
-/// Unpair from a device
 pub async fn unpair_device(device_id: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.unpair_device(&device_id).await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.unpair_device(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).unpair_device(&device_id).await
 }
 
-/// Send a ping to a device
 pub async fn ping_device(device_id: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.send_ping(&device_id, "Ping from COSMIC!").await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.send_ping(id, "Ping from COSMIC!".into()).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).send_ping(&device_id, "Ping from COSMIC!").await
 }
 
-/// Send files to a device
 pub async fn send_files(device_id: String, files: Vec<String>) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.send_files(&device_id, files).await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        let f = files.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.send_files(id, f).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).send_files(&device_id, files).await
 }
 
-/// Send clipboard content to a device
 pub async fn send_clipboard(device_id: String, content: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.send_clipboard(&device_id, &content).await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        let ct = content.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.send_clipboard(id, ct).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).send_clipboard(&device_id, &content).await
 }
 
-/// Browse device filesystem (via SFTP)
 pub async fn browse_device_filesystem(_device_id: String) -> Result<()> {
-    warn!("Browse filesystem not yet implemented via D-Bus");
+    warn!("Browse filesystem not yet implemented");
     Ok(())
 }
 
-/// Accept an incoming pairing request from a device
 pub async fn accept_pairing(device_id: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.accept_pairing(&device_id).await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.accept_pairing(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).accept_pairing(&device_id).await
 }
 
-/// Reject an incoming pairing request from a device
 pub async fn reject_pairing(device_id: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.reject_pairing(&device_id).await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.reject_pairing(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).reject_pairing(&device_id).await
 }
 
-/// Ring a device (findmyphone)
 pub async fn ring_device(device_id: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.ring_device(&device_id).await
+    // findmyphone not in varlink IDL yet — D-Bus only
+    let g = CLIENT.lock().await;
+    dbus_client!(g).ring_device(&device_id).await
 }
 
-/// Enable or disable a plugin for a device
 #[allow(dead_code)]
 pub async fn set_plugin_enabled(device_id: String, plugin_id: String, enabled: bool) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.set_plugin_enabled(&device_id, &plugin_id, enabled).await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        let plug = plugin_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.set_plugin_enabled(id, plug, enabled).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).set_plugin_enabled(&device_id, &plugin_id, enabled).await
 }
 
-/// Return the list of disabled plugin IDs for a device
 #[allow(dead_code)]
 pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
+    let g = CLIENT.lock().await;
+    let Some(client) = g.as_ref() else {
         warn!("D-Bus client not initialized");
         return vec![];
     };
@@ -196,66 +359,53 @@ pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
     }
 }
 
-/// Broadcast our identity packet over UDP to trigger device discovery
 #[allow(dead_code)]
 pub async fn broadcast_identity() -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.broadcast_identity().await
+    let g = CLIENT.lock().await;
+    dbus_client!(g).broadcast_identity().await
 }
 
-/// Request SMS conversations from a device
 #[allow(dead_code)]
 pub async fn request_conversations(device_id: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.request_conversations(&device_id).await
+    let g = CLIENT.lock().await;
+    dbus_client!(g).request_conversations(&device_id).await
 }
 
-/// Request a specific SMS conversation thread
 #[allow(dead_code)]
 pub async fn request_conversation(device_id: String, thread_id: i64) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.request_conversation(&device_id, thread_id).await
+    let g = CLIENT.lock().await;
+    dbus_client!(g).request_conversation(&device_id, thread_id).await
 }
 
-/// Send an SMS message
 #[allow(dead_code)]
 pub async fn send_sms(device_id: String, phone_number: String, message: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.send_sms(&device_id, &phone_number, &message).await
+    let g = CLIENT.lock().await;
+    dbus_client!(g).send_sms(&device_id, &phone_number, &message).await
 }
 
-/// Request the remote command list from a device
 pub async fn request_run_commands(device_id: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.request_run_commands(&device_id).await
+    let g = CLIENT.lock().await;
+    dbus_client!(g).request_run_commands(&device_id).await
 }
 
-/// Execute a remote command on a device by key
 pub async fn execute_run_command(device_id: String, key: String) -> Result<()> {
-    let client_guard = CLIENT.lock().await;
-    let Some(client) = client_guard.as_ref() else {
-        return Err(anyhow::anyhow!("D-Bus client not initialized"));
-    };
-    client.run_command(&device_id, &key).await
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        let k = key.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.run_command(id, k).call().await.map(|_| ())
+        }
+    }).await { return r; }
+
+    let g = CLIENT.lock().await;
+    dbus_client!(g).run_command(&device_id, &key).await
 }
 
-/// Stream of service events. Reconnects automatically when the client is
-/// replaced (e.g. after session logout/login) or the stream ends.
+// ---------------------------------------------------------------------------
+// Event subscriptions — D-Bus only (MPRIS2, signals)
+// ---------------------------------------------------------------------------
+
 #[allow(dead_code)]
 pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent> {
     use tokio::sync::mpsc;
@@ -265,7 +415,6 @@ pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent>
 
     tokio::spawn(async move {
         'reconnect: loop {
-            // Wait for the D-Bus client to be ready.
             let client = 'wait: loop {
                 if let Some(client) = CLIENT.lock().await.clone() {
                     break 'wait client;
@@ -283,7 +432,7 @@ pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent>
                         match event {
                             Some(e) => {
                                 if tx.send(e).await.is_err() {
-                                    return; // applet exiting
+                                    return;
                                 }
                             }
                             None => {
@@ -293,8 +442,6 @@ pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent>
                             }
                         }
                     }
-                    // Detect if CLIENT was replaced by a new initialize() call
-                    // (happens after session logout/login while applet stays running).
                     _ = async {
                         loop {
                             sleep(Duration::from_millis(500)).await;
@@ -316,9 +463,6 @@ pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent>
     Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
 }
 
-/// Subscription that watches for the kdeconnect service reappearing on the bus
-/// after a session logout/login. Reinitializes the D-Bus client and yields
-/// a refresh so the applet picks up devices from the new service instance.
 pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> {
     struct ServiceWatcher;
 
@@ -345,25 +489,24 @@ pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> 
 
             while let Some(Ok(msg)) = stream.next().await {
                 let msg: zbus::Message = msg;
-                if let Ok((_name, _old, new_owner)) = msg.body().deserialize::<(String, String, String)>() {
+                if let Ok((_name, _old, new_owner)) =
+                    msg.body().deserialize::<(String, String, String)>()
+                {
                     if !new_owner.is_empty() {
-                        // Service has a new owner — reinitialize the client.
                         info!("kdeconnect service reappeared on bus — reinitializing client");
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                         if let Err(e) = initialize().await {
-                            error!("Failed to reinitialize D-Bus client: {:?}", e);
+                            error!("Failed to reinitialize: {:?}", e);
                             continue;
                         }
-                        // Broadcast so paired phones reconnect immediately.
                         broadcast_identity().await.ok();
-                        // Poll until devices appear or give up after 90s.
                         let mut elapsed = 0u64;
                         loop {
                             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
                             elapsed += 3;
                             let devices = fetch_devices().await;
                             if !devices.is_empty() {
-                                info!("Device found after {}s — yielding refresh", elapsed);
+                                info!("Device found after {}s", elapsed);
                                 yield crate::messages::Message::RefreshDevices;
                                 break;
                             }
@@ -379,7 +522,6 @@ pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> 
     })
 }
 
-/// Subscription for file transfer progress updates
 #[allow(dead_code)]
 pub fn filetransfer_subscription() -> Subscription<crate::messages::Message> {
     struct Worker;
