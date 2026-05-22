@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=KDE Connect Settings
+Comment=KDE Connect Settings for COSMIC Desktop
+Icon=io.github.hepp3n.kdeconnect
+Exec=cosmic-ext-connect-settings
+Terminal=false
+Type=Application
+StartupNotify=true
+NoDisplay=true
+StartupWMClass=io.github.hepp3n.kdeconnect.settings
+Categories=Network;Settings;
+Keywords=KDE Connect;Settings;COSMIC;
