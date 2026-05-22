@@ -1,4 +1,5 @@
 pub mod iface {
+    #![allow(non_camel_case_types, clippy::upper_case_acronyms)]
     include!(concat!(env!("OUT_DIR"), "/io_github_hepp3n_kdeconnect.rs"));
 }
 

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use tokio::sync::broadcast;
-use tracing::{error, info};
+use tracing::info;
 
 mod dbus_interface;
 mod varlink_server;
@@ -43,8 +43,6 @@ async fn main() -> Result<()> {
     let service = dbus_interface::KdeConnectService::new().await?;
     info!("D-Bus service started on io.github.hepp3n.kdeconnect");
 
-    // Spawn varlink server alongside D-Bus.
-    // broadcast channel capacity of 64 is enough for burst events from a single phone.
     let (broadcast_tx, _) = broadcast::channel(64);
     service.start_varlink(broadcast_tx);
 

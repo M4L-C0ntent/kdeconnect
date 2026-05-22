@@ -12,6 +12,8 @@ path = "src/lib.rs"
 [dependencies]
 kdeconnect-core = { workspace = true }
 kdeconnect-dbus-client = { workspace = true }
+kdeconnect-varlink = { path = "../kdeconnect-varlink" }
+varlink = { version = "13", features = ["tokio"] }
 ashpd = { workspace = true }
 libcosmic = { workspace = true }
 tokio = { workspace = true }

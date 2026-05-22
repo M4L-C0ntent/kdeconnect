@@ -1,10 +1,4 @@
 //! Backend interface — varlink-first, D-Bus fallback.
-//!
-//! On a native install both transports are available. Inside a Flatpak sandbox
-//! D-Bus activation of kdeconnect-service does not work (the /app binary path
-//! is invisible to the host bus), so varlink via a well-known Unix socket path
-//! is the reliable path. D-Bus is kept for MPRIS2 and signal subscriptions
-//! which are COSMIC-native and cannot move.
 
 use anyhow::Result;
 use cosmic::iced::Subscription;
@@ -18,27 +12,14 @@ use tracing::{error, info, warn};
 use crate::models::Device;
 
 lazy_static::lazy_static! {
-    /// Active D-Bus client — kept for MPRIS2, signals, and SMS/contacts
-    /// which are not yet routed through varlink.
     static ref CLIENT: Arc<Mutex<Option<Arc<KdeConnectClient>>>> =
         Arc::new(Mutex::new(None));
-
     static ref DEVICE_CACHE: Arc<Mutex<HashMap<String, Device>>> =
         Arc::new(Mutex::new(HashMap::new()));
-
-    /// Varlink socket address when the service is reachable that way.
-    /// `None` means fall through to D-Bus for all calls.
     static ref VARLINK_ADDR: Arc<Mutex<Option<String>>> =
         Arc::new(Mutex::new(None));
 }
 
-// ---------------------------------------------------------------------------
-// Initialisation
-// ---------------------------------------------------------------------------
-
-/// Probe varlink socket first; fall back to D-Bus session bus.
-/// Both transports are connected when available so that D-Bus signals
-/// (MPRIS2, transfer progress) keep working even when commands go via varlink.
 pub async fn initialize() -> Result<()> {
     let addr = kdeconnect_varlink::socket_address();
 
@@ -46,8 +27,6 @@ pub async fn initialize() -> Result<()> {
         Ok(_probe) => {
             info!("Varlink socket reachable at {}", addr);
             *VARLINK_ADDR.lock().await = Some(addr);
-
-            // Still connect D-Bus for MPRIS2 and signal subscriptions.
             match KdeConnectClient::new().await {
                 Ok(client) => {
                     *CLIENT.lock().await = Some(Arc::new(client));
@@ -69,17 +48,10 @@ pub async fn initialize() -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Varlink helpers
-// ---------------------------------------------------------------------------
-
-/// Open a fresh varlink connection and run `f` against it.
-/// Returns `None` when varlink is not configured (D-Bus mode).
-/// Returns `Some(Err(...))` on connection or call failure.
 async fn via_varlink<F, Fut, T>(f: F) -> Option<Result<T>>
 where
     F: FnOnce(kdeconnect_varlink::iface::VarlinkClient) -> Fut,
-    Fut: std::future::Future<Output = varlink::Result<T>>,
+    Fut: std::future::Future<Output = Result<T, kdeconnect_varlink::Error>>,
 {
     let addr = VARLINK_ADDR.lock().await.clone()?;
     match varlink::AsyncConnection::with_address(&addr).await {
@@ -90,12 +62,11 @@ where
         ),
         Err(e) => {
             warn!("Varlink reconnect failed: {:?}", e);
-            None // let caller fall through to D-Bus
+            None
         }
     }
 }
 
-/// Convenience: require an initialized D-Bus client or return an error.
 macro_rules! dbus_client {
     ($guard:ident) => {
         match $guard.as_ref() {
@@ -105,12 +76,7 @@ macro_rules! dbus_client {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Device list
-// ---------------------------------------------------------------------------
-
 pub async fn fetch_devices() -> Vec<Device> {
-    // Varlink path
     if let Some(Ok(reply)) = via_varlink(|c| async move {
         use kdeconnect_varlink::iface::VarlinkClientInterface;
         c.list_devices().call().await
@@ -153,7 +119,6 @@ pub async fn fetch_devices() -> Vec<Device> {
         return devices;
     }
 
-    // D-Bus fallback
     let client_guard = CLIENT.lock().await;
     let Some(client) = client_guard.as_ref() else {
         warn!("D-Bus client not initialized");
@@ -163,42 +128,38 @@ pub async fn fetch_devices() -> Vec<Device> {
     match client.list_devices().await {
         Ok(dbus_devices) => {
             let mut cache = DEVICE_CACHE.lock().await;
-            let devices: Vec<Device> = dbus_devices
-                .into_iter()
-                .map(|d| {
-                    let existing = cache.get(&d.id).cloned();
-                    let device = Device {
-                        id: d.id.clone(),
-                        name: d.name.clone(),
-                        device_type: "phone".to_string(),
-                        is_paired: d.is_paired,
-                        is_reachable: d.is_reachable,
-                        battery_level: existing.as_ref().and_then(|e| e.battery_level),
-                        is_charging: existing.as_ref().and_then(|e| e.is_charging),
-                        network_type: existing.as_ref().and_then(|e| e.network_type.clone()),
-                        signal_strength: existing.as_ref().and_then(|e| e.signal_strength),
-                        pairing_requests: 0,
-                        has_battery: false,
-                        has_ping: true,
-                        has_sms: true,
-                        has_contacts: false,
-                        has_clipboard: true,
-                        has_findmyphone: true,
-                        has_share: true,
-                        share_progress: existing.as_ref().and_then(|e| e.share_progress),
-                        has_sftp: false,
-                        has_mpris: false,
-                        has_remote_keyboard: false,
-                        has_presenter: false,
-                        has_lockdevice: false,
-                        has_virtualmonitor: false,
-                        run_commands: existing.as_ref().map(|e| e.run_commands.clone()).unwrap_or_default(),
-                    };
-                    cache.insert(d.id.clone(), device.clone());
-                    device
-                })
-                .collect();
-            devices
+            dbus_devices.into_iter().map(|d| {
+                let existing = cache.get(&d.id).cloned();
+                let device = Device {
+                    id: d.id.clone(),
+                    name: d.name.clone(),
+                    device_type: "phone".to_string(),
+                    is_paired: d.is_paired,
+                    is_reachable: d.is_reachable,
+                    battery_level: existing.as_ref().and_then(|e| e.battery_level),
+                    is_charging: existing.as_ref().and_then(|e| e.is_charging),
+                    network_type: existing.as_ref().and_then(|e| e.network_type.clone()),
+                    signal_strength: existing.as_ref().and_then(|e| e.signal_strength),
+                    pairing_requests: 0,
+                    has_battery: false,
+                    has_ping: true,
+                    has_sms: true,
+                    has_contacts: false,
+                    has_clipboard: true,
+                    has_findmyphone: true,
+                    has_share: true,
+                    share_progress: existing.as_ref().and_then(|e| e.share_progress),
+                    has_sftp: false,
+                    has_mpris: false,
+                    has_remote_keyboard: false,
+                    has_presenter: false,
+                    has_lockdevice: false,
+                    has_virtualmonitor: false,
+                    run_commands: existing.as_ref().map(|e| e.run_commands.clone()).unwrap_or_default(),
+                };
+                cache.insert(d.id.clone(), device.clone());
+                device
+            }).collect()
         }
         Err(e) => {
             error!("Failed to fetch devices: {:?}", e);
@@ -206,10 +167,6 @@ pub async fn fetch_devices() -> Vec<Device> {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Cache helpers
-// ---------------------------------------------------------------------------
 
 pub async fn update_device(device_id: String, device: Device) {
     DEVICE_CACHE.lock().await.insert(device_id, device);
@@ -220,10 +177,6 @@ pub async fn remove_device(device_id: &str) {
     DEVICE_CACHE.lock().await.remove(device_id);
 }
 
-// ---------------------------------------------------------------------------
-// Commands — varlink-first, D-Bus fallback
-// ---------------------------------------------------------------------------
-
 pub async fn pair_device(device_id: String) -> Result<()> {
     if let Some(r) = via_varlink(|c| {
         let id = device_id.clone();
@@ -232,7 +185,6 @@ pub async fn pair_device(device_id: String) -> Result<()> {
             c.pair_device(id).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).pair_device(&device_id).await
 }
@@ -245,7 +197,6 @@ pub async fn unpair_device(device_id: String) -> Result<()> {
             c.unpair_device(id).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).unpair_device(&device_id).await
 }
@@ -258,7 +209,6 @@ pub async fn ping_device(device_id: String) -> Result<()> {
             c.send_ping(id, "Ping from COSMIC!".into()).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).send_ping(&device_id, "Ping from COSMIC!").await
 }
@@ -272,7 +222,6 @@ pub async fn send_files(device_id: String, files: Vec<String>) -> Result<()> {
             c.send_files(id, f).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).send_files(&device_id, files).await
 }
@@ -286,7 +235,6 @@ pub async fn send_clipboard(device_id: String, content: String) -> Result<()> {
             c.send_clipboard(id, ct).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).send_clipboard(&device_id, &content).await
 }
@@ -304,7 +252,6 @@ pub async fn accept_pairing(device_id: String) -> Result<()> {
             c.accept_pairing(id).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).accept_pairing(&device_id).await
 }
@@ -317,13 +264,11 @@ pub async fn reject_pairing(device_id: String) -> Result<()> {
             c.reject_pairing(id).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).reject_pairing(&device_id).await
 }
 
 pub async fn ring_device(device_id: String) -> Result<()> {
-    // findmyphone not in varlink IDL yet — D-Bus only
     let g = CLIENT.lock().await;
     dbus_client!(g).ring_device(&device_id).await
 }
@@ -338,7 +283,6 @@ pub async fn set_plugin_enabled(device_id: String, plugin_id: String, enabled: b
             c.set_plugin_enabled(id, plug, enabled).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).set_plugin_enabled(&device_id, &plugin_id, enabled).await
 }
@@ -397,14 +341,9 @@ pub async fn execute_run_command(device_id: String, key: String) -> Result<()> {
             c.run_command(id, k).call().await.map(|_| ())
         }
     }).await { return r; }
-
     let g = CLIENT.lock().await;
     dbus_client!(g).run_command(&device_id, &key).await
 }
-
-// ---------------------------------------------------------------------------
-// Event subscriptions — D-Bus only (MPRIS2, signals)
-// ---------------------------------------------------------------------------
 
 #[allow(dead_code)]
 pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent> {
@@ -423,18 +362,13 @@ pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent>
             };
 
             info!("Event stream: D-Bus client ready, subscribing");
-
             let mut stream = client.listen_for_events().await;
 
             loop {
                 tokio::select! {
                     event = stream.next() => {
                         match event {
-                            Some(e) => {
-                                if tx.send(e).await.is_err() {
-                                    return;
-                                }
-                            }
+                            Some(e) => { if tx.send(e).await.is_err() { return; } }
                             None => {
                                 warn!("Event stream ended, reconnecting in 1s");
                                 sleep(Duration::from_secs(1)).await;
@@ -446,9 +380,7 @@ pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent>
                         loop {
                             sleep(Duration::from_millis(500)).await;
                             if let Some(current) = CLIENT.lock().await.clone() {
-                                if !Arc::ptr_eq(&current, &client) {
-                                    return;
-                                }
+                                if !Arc::ptr_eq(&current, &client) { return; }
                             }
                         }
                     } => {
@@ -471,9 +403,7 @@ pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> 
             use zbus::{MatchRule, MessageStream};
             use futures::StreamExt;
 
-            let Ok(connection) = zbus::Connection::session().await else {
-                return;
-            };
+            let Ok(connection) = zbus::Connection::session().await else { return; };
 
             let rule = MatchRule::builder()
                 .msg_type(zbus::message::Type::Signal)
@@ -483,9 +413,7 @@ pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> 
                 .build();
 
             let Ok(mut stream): Result<zbus::MessageStream, _> =
-                MessageStream::for_match_rule(rule, &connection, None).await else {
-                return;
-            };
+                MessageStream::for_match_rule(rule, &connection, None).await else { return; };
 
             while let Some(Ok(msg)) = stream.next().await {
                 let msg: zbus::Message = msg;
@@ -493,7 +421,7 @@ pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> 
                     msg.body().deserialize::<(String, String, String)>()
                 {
                     if !new_owner.is_empty() {
-                        info!("kdeconnect service reappeared on bus — reinitializing client");
+                        info!("kdeconnect service reappeared on bus — reinitializing");
                         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                         if let Err(e) = initialize().await {
                             error!("Failed to reinitialize: {:?}", e);
@@ -528,10 +456,7 @@ pub fn filetransfer_subscription() -> Subscription<crate::messages::Message> {
 
     Subscription::run_with(TypeId::of::<Worker>(), |_| {
         async_stream::stream! {
-            let Ok(client) = KdeConnectClient::new().await else {
-                return;
-            };
-
+            let Ok(client) = KdeConnectClient::new().await else { return; };
             let mut progress_stream = client.transfer_progress_stream().await;
             while let Some(progress) = progress_stream.next().await {
                 yield crate::messages::Message::UpdateTransferProgress(progress);

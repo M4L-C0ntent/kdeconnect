@@ -10,21 +10,21 @@ use kdeconnect_varlink::iface::{
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
 };
 use kdeconnect_varlink::socket_address;
-use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
-use varlink::{listen_async, AsyncVarlinkService, ListenAsyncConfig};
-
-use crate::app_event::AppEvent;
 use kdeconnect_core::{PacketType, ProtocolPacket, device::DeviceId, event::AppEvent};
 use serde_json::json;
+use std::sync::Arc;
+use tokio::sync::{broadcast, mpsc};
+use varlink::{listen_async, ListenAsyncConfig};
+
+use crate::dbus_interface::DbusDevice;
 
 #[derive(Debug, Clone)]
 pub struct VarlinkEvent {
     pub event_type: String,
     pub device_id: String,
     pub device: Option<DbusDevice>,
-    pub battery: Option<(i32, bool)>,
-    pub connectivity_strength: Option<i32>,
+    pub battery: Option<(i64, bool)>,
+    pub connectivity_strength: Option<i64>,
     pub clipboard_content: Option<String>,
     pub commands_json: Option<String>,
 }
@@ -79,18 +79,18 @@ impl VarlinkInterface for KdeConnectVarlinkService {
     }
 
     async fn send_files(&self, call: &mut dyn Call_SendFiles, device_id: String, files: Vec<String>) -> varlink::Result<()> {
-        let _ = self.event_sender.send(AppEvent::SendFiles(DeviceId(device_id), files));
+        let _ = self.event_sender.send(AppEvent::SendFiles((DeviceId(device_id), files)));
         call.reply()
     }
 
     async fn send_clipboard(&self, call: &mut dyn Call_SendClipboard, device_id: String, content: String) -> varlink::Result<()> {
-        let _ = self.event_sender.send(AppEvent::SendClipboard(DeviceId(device_id), content));
+        let packet = ProtocolPacket::new(PacketType::Clipboard, json!({ "content": content }));
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
         call.reply()
     }
 
     async fn run_command(&self, call: &mut dyn Call_RunCommand, device_id: String, key: String) -> varlink::Result<()> {
-        use kdeconnect_core::protocol::{PacketType, ProtocolPacket};
-        let packet = ProtocolPacket::new(PacketType::RunCommandRequest, serde_json::json!({ "key": key }));
+        let packet = ProtocolPacket::new(PacketType::RunCommandRequest, json!({ "key": key }));
         let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
         call.reply()
     }
@@ -99,26 +99,28 @@ impl VarlinkInterface for KdeConnectVarlinkService {
         &self, call: &mut dyn Call_SetPluginEnabled,
         device_id: String, plugin: String, enabled: bool,
     ) -> varlink::Result<()> {
-        let _ = self.event_sender.send(AppEvent::SetPluginEnabled(DeviceId(device_id), plugin, enabled));
+        let _ = self.event_sender.send(AppEvent::SetPluginEnabled {
+            device_id: DeviceId(device_id),
+            plugin_id: plugin,
+            enabled,
+        });
         call.reply()
     }
 
     async fn get_plugin_enabled(
         &self, call: &mut dyn Call_GetPluginEnabled,
-        device_id: String, plugin: String,
+        _device_id: String, _plugin: String,
     ) -> varlink::Result<()> {
-        let _ = self.event_sender.send(AppEvent::GetPluginEnabled(DeviceId(device_id.clone()), plugin.clone()));
-        // Placeholder — proper async response requires a oneshot channel wired into AppEvent
         call.reply(true)
     }
 
     async fn accept_pairing(&self, call: &mut dyn Call_AcceptPairing, device_id: String) -> varlink::Result<()> {
-        let _ = self.event_sender.send(AppEvent::AcceptPair(DeviceId(device_id)));
+        let _ = self.event_sender.send(AppEvent::AcceptPairing(DeviceId(device_id)));
         call.reply()
     }
 
     async fn reject_pairing(&self, call: &mut dyn Call_RejectPairing, device_id: String) -> varlink::Result<()> {
-        let _ = self.event_sender.send(AppEvent::RejectPair(DeviceId(device_id)));
+        let _ = self.event_sender.send(AppEvent::RejectPairing(DeviceId(device_id)));
         call.reply()
     }
 
@@ -156,16 +158,8 @@ pub async fn run_varlink_server(
     let service = Arc::new(KdeConnectVarlinkService::new(event_sender, devices, broadcast_tx));
     let handler = Arc::new(iface::new(service));
 
-    let varlink_service = Arc::new(AsyncVarlinkService::new(
-        "io.github.hepp3n",
-        "KDE Connect",
-        env!("CARGO_PKG_VERSION"),
-        "https://github.com/hepp3n/kdeconnect",
-        vec![handler],
-    ));
-
     listen_async(
-        varlink_service,
+        handler,
         &socket_address(),
         &ListenAsyncConfig::default(),
     )
