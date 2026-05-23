@@ -217,7 +217,7 @@ impl Application for SettingsApp {
     type Executor = cosmic::executor::Default;
     type Flags = ();
     type Message = Message;
-    const APP_ID: &'static str = "io.github.M4L-C0ntent.kdeconnect.settings";
+    const APP_ID: &'static str = "io.github.hepp3n.kdeconnect.settings";
 
     fn core(&self) -> &Core {
         &self.core
@@ -240,8 +240,10 @@ impl Application for SettingsApp {
             new_cmd_command: String::new(),
         };
 
+        app.core.window.header_title = fl!("settings-title").into();
+
         let title_task = app.set_window_title(
-            fl!("settings-title").to_string(),
+            fl!("settings-title"),
             app.core.main_window_id().unwrap(),
         );
 

@@ -41,6 +41,10 @@ install-applet-desktop:
     sed 's|Exec=cosmic-ext-connect-applet|Exec={{PREFIX}}/bin/cosmic-ext-connect-applet|' \
         resources/{{APPID}}.desktop \
         > {{PREFIX}}/share/applications/{{APPID}}.desktop
+    install -Dm644 resources/{{APPID}}.settings.desktop \
+        {{PREFIX}}/share/applications/{{APPID}}.settings.desktop
+    install -Dm644 resources/{{APPID}}.sms.desktop \
+        {{PREFIX}}/share/applications/{{APPID}}.sms.desktop
 
 # Write D-Bus activation file with correct full path
 install-dbus-service:
