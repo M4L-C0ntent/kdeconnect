@@ -89,8 +89,13 @@ impl Application for SmsWindow {
             new_chat_phone_input: String::new(),
         };
 
-        let title = format!("SMS - {}", device_name);
-        let title_task = app.set_window_title(title, app.core.main_window_id().unwrap());
+        let title = fl!("sms-window-title", device = device_name.as_str());
+        app.core.window.header_title = title.clone().into();
+
+        let title_task = app.set_window_title(
+            title,
+            app.core.main_window_id().unwrap(),
+        );
 
         (app, title_task)
     }
