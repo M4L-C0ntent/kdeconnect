@@ -6,7 +6,6 @@ Exec=cosmic-ext-connect-settings
 Terminal=false
 Type=Application
 StartupNotify=true
-NoDisplay=true
 StartupWMClass=io.github.hepp3n.kdeconnect.settings
 Categories=Network;Settings;
 Keywords=KDE Connect;Settings;COSMIC;
