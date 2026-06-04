@@ -1,0 +1,41 @@
+interface io.github.hepp3n.kdeconnect
+
+type Device (
+    id: string,
+    name: string,
+    device_type: string,
+    is_paired: bool,
+    is_reachable: bool
+)
+
+type BatteryState (
+    level: int,
+    is_charging: bool
+)
+
+method ListDevices() -> (devices: []Device)
+method PairDevice(device_id: string) -> ()
+method UnpairDevice(device_id: string) -> ()
+method SendPing(device_id: string, message: string) -> ()
+method SendFiles(device_id: string, files: []string) -> ()
+method SendClipboard(device_id: string, content: string) -> ()
+method RunCommand(device_id: string, key: string) -> ()
+method SetPluginEnabled(device_id: string, plugin: string, enabled: bool) -> ()
+method GetPluginEnabled(device_id: string, plugin: string) -> (enabled: bool)
+method AcceptPairing(device_id: string) -> ()
+method RejectPairing(device_id: string) -> ()
+
+method Subscribe() -> (
+    event_type: string,
+    device_id: string,
+    device: ?Device,
+    battery: ?BatteryState,
+    connectivity_strength: ?int,
+    clipboard_content: ?string,
+    commands_json: ?string,
+    message: ?string
+)
+
+error DeviceNotFound(device_id: string)
+error NotPaired(device_id: string)
+error ServiceError(reason: string)
