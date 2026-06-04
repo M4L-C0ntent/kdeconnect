@@ -18,26 +18,27 @@ pub struct LocalCommand {
     pub command: String,
 }
 
-/// Path to the global run-command config file.
-/// Stored as a JSON array of LocalCommand so the settings UI can read/write it.
-fn load_local_commands() -> Vec<LocalCommand> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let path = std::path::PathBuf::from(&home)
-        .join(".config")
+fn commands_config_path() -> std::path::PathBuf {
+    // Inside Flatpak XDG_CONFIG_HOME points to the sandboxed config dir.
+    // Outside Flatpak it is unset and falls back to ~/.config.
+    let config_home = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/.config", home)
+    });
+    std::path::PathBuf::from(config_home)
         .join("kdeconnect")
-        .join("runcommand.json");
-    match std::fs::read_to_string(&path) {
+        .join("runcommand.json")
+}
+
+fn load_local_commands() -> Vec<LocalCommand> {
+    match std::fs::read_to_string(commands_config_path()) {
         Ok(json_str) => serde_json::from_str::<Vec<LocalCommand>>(&json_str).unwrap_or_default(),
         Err(_) => vec![],
     }
 }
 
 fn save_local_commands(commands: &[LocalCommand]) {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let path = std::path::PathBuf::from(&home)
-        .join(".config")
-        .join("kdeconnect")
-        .join("runcommand.json");
+    let path = commands_config_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

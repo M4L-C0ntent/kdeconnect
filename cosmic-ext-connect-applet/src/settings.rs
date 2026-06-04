@@ -35,10 +35,16 @@ fn save_run_commands(commands: &[LocalCommand]) {
     if let Some(cfg) = run_commands_config() {
         let _ = cfg.set(RUN_COMMANDS_CONFIG_KEY, commands);
     }
-    // Also write a plain JSON file for the service to read, since cosmic_config
-    // stores RON format which serde_json cannot parse.
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let path = home.join(".config").join("kdeconnect").join("runcommand.json");
+    let config_home = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(".config")
+            .to_string_lossy()
+            .to_string()
+    });
+    let path = std::path::PathBuf::from(config_home)
+        .join("kdeconnect")
+        .join("runcommand.json");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
