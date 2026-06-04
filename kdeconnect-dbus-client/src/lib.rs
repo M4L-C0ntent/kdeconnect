@@ -66,6 +66,7 @@ trait Daemon {
     async fn reject_pairing(&self, device_id: &str) -> zbus::Result<()>;
     async fn run_command(&self, device_id: &str, key: &str) -> zbus::Result<()>;
     async fn request_run_commands(&self, device_id: &str) -> zbus::Result<()>;
+    async fn push_local_commands(&self, device_id: &str) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn pairing_requested(&self, device_id: String, device_name: String) -> zbus::Result<()>;
@@ -239,6 +240,11 @@ impl KdeConnectClient {
     /// Request the remote command list from a device
     pub async fn request_run_commands(&self, device_id: &str) -> Result<()> {
         Ok(self.daemon_proxy.request_run_commands(device_id).await?)
+    }
+
+    /// Push our local command list to a connected device immediately.
+    pub async fn push_local_commands(&self, device_id: &str) -> Result<()> {
+        Ok(self.daemon_proxy.push_local_commands(device_id).await?)
     }
 
     /// Request SMS conversations

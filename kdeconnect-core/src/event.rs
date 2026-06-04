@@ -29,6 +29,7 @@ pub enum CoreEvent {
         device: DeviceId,
         packet: ProtocolPacket,
     },
+
     SendPaylod {
         device: DeviceId,
         packet: ProtocolPacket,
@@ -51,6 +52,7 @@ pub enum AppEvent {
     MprisAction((DeviceId, String, MprisAction)),
     SendMprisRequest((DeviceId, MprisRequest)),
     SendPacket(DeviceId, ProtocolPacket),
+    PushLocalCommands(DeviceId),
     SetPluginEnabled {
         device_id: DeviceId,
         plugin_id: String,
