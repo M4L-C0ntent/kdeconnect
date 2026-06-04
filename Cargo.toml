@@ -4,6 +4,7 @@ members = [
     "kdeconnect-service",
     "kdeconnect-dbus-client",
     "kdeconnect-core",
+    "kdeconnect-varlink",
 ]
 resolver = "2"
 
