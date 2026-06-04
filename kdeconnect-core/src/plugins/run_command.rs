@@ -158,12 +158,20 @@ impl RunCommandRequest {
                     "[runcommand] executing '{}': {}",
                     cmd.name, cmd.command
                 );
-                if let Err(e) = std::process::Command::new("flatpak-spawn")
-                    .arg("--host")
-                    .arg("sh")
-                    .arg("-c")
-                    .arg(&cmd.command)
-                    .spawn()
+                let result = if std::env::var("FLATPAK_ID").is_ok() {
+                    std::process::Command::new("flatpak-spawn")
+                        .arg("--host")
+                        .arg("sh")
+                        .arg("-c")
+                        .arg(&cmd.command)
+                        .spawn()
+                } else {
+                    std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(&cmd.command)
+                        .spawn()
+                };
+                if let Err(e) = result
                 {
                     warn!("[runcommand] failed to spawn '{}': {}", cmd.name, e);
                 }
