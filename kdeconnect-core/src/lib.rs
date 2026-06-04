@@ -472,6 +472,9 @@ impl KdeConnectCore {
                     );
                 }
             }
+            AppEvent::PushLocalCommands(device_id) => {
+                plugins::run_command::send_command_list(&device_id, self.event_tx.clone()).await;
+            }
             AppEvent::SendFiles((device_id, files_list)) => {
                 info!("frontend trying to sent files to device: {}", device_id);
 

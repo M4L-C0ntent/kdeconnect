@@ -450,13 +450,20 @@ fn main() -> cosmic::iced::Result {
 
     ctrlc::set_handler(move || std::process::exit(0)).ok();
 
-    // Inside a Flatpak, D-Bus activation cannot launch kdeconnect-service because
-// the host bus cannot resolve /app/bin paths. The service is spawned here so
-// it is always running before varlink or D-Bus connections are attempted.
-// If an instance is already running it exits immediately on the single-instance
-// guard. The process is in the same group as the applet so it is cleaned up
-// when the session ends.
+    // Spawn the service in the same process group so it exits when the session ends.
+    // If the service is already running it exits immediately (D-Bus name already taken).
+    // Explicitly forward HOME so the service reads config from the correct path
+    // regardless of the environment the COSMIC panel provides.
+    let home = std::env::var("HOME").unwrap_or_else(|_| {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .to_string_lossy()
+            .to_string()
+    });
     let _ = std::process::Command::new("kdeconnect-service")
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", std::env::var("XDG_RUNTIME_DIR").unwrap_or_default())
+        .env("XDG_CONFIG_HOME", std::env::var("XDG_CONFIG_HOME").unwrap_or_default())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

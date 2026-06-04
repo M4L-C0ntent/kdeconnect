@@ -17,6 +17,8 @@
         "--share=network",
         "--filesystem=xdg-download",
         "--filesystem=xdg-config/cosmic:rw",
+        "--filesystem=xdg-config/kdeconnect:rw",
+        "--talk-name=org.freedesktop.Flatpak",
         "--socket=pulseaudio"
     ],
     "build-options": {

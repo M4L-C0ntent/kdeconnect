@@ -345,6 +345,17 @@ pub async fn execute_run_command(device_id: String, key: String) -> Result<()> {
     dbus_client!(g).run_command(&device_id, &key).await
 }
 
+/// Notify the running service to re-send the local command list to a connected
+/// device. Call this immediately after adding or removing a local command so
+/// the phone reflects the change without waiting for reconnect.
+pub async fn push_local_commands(device_id: String) {
+    if let Some(client) = CLIENT.lock().await.clone() {
+        let _ = client.push_local_commands(&device_id).await;
+    }
+}
+
+/// Stream of service events. Reconnects automatically when the client is
+/// replaced (e.g. after session logout/login) or the stream ends.
 #[allow(dead_code)]
 pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent> {
     use tokio::sync::mpsc;

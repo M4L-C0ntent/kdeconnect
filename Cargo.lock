@@ -1049,6 +1049,7 @@ dependencies = [
  "ashpd 0.13.11",
  "async-stream",
  "ctrlc",
+ "dirs",
  "futures",
  "futures-util",
  "i18n-embed",
