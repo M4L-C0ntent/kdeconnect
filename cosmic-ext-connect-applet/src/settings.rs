@@ -11,28 +11,38 @@ use cosmic::{
 use cosmic_ext_connect_applet::{backend, models::Device};
 use futures::StreamExt as _;
 use std::collections::HashMap;
+use cosmic::cosmic_config::{ConfigGet, ConfigSet};
 
 /// A desktop command stored as JSON: {id, name, command}
 type LocalCommand = serde_json::Value;
 
-fn run_commands_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(format!("{}/.config/kdeconnect/runcommand.json", home))
+const RUN_COMMANDS_CONFIG_ID: &str = "io.github.hepp3n.kdeconnect";
+const RUN_COMMANDS_CONFIG_VERSION: u64 = 1;
+const RUN_COMMANDS_CONFIG_KEY: &str = "run_commands";
+
+fn run_commands_config() -> Option<cosmic::cosmic_config::Config> {
+    cosmic::cosmic_config::Config::new(RUN_COMMANDS_CONFIG_ID, RUN_COMMANDS_CONFIG_VERSION).ok()
 }
 
 fn load_run_commands() -> Vec<LocalCommand> {
-    match std::fs::read_to_string(run_commands_path()) {
-        Ok(json) => serde_json::from_str::<Vec<LocalCommand>>(&json).unwrap_or_default(),
-        Err(_) => vec![],
-    }
+    run_commands_config()
+        .and_then(|cfg| cfg.get::<Vec<LocalCommand>>(RUN_COMMANDS_CONFIG_KEY).ok())
+        .unwrap_or_default()
 }
 
 fn save_run_commands(commands: &[LocalCommand]) {
-    let path = run_commands_path();
+    // Write to cosmic_config for applet persistence across sessions.
+    if let Some(cfg) = run_commands_config() {
+        let _ = cfg.set(RUN_COMMANDS_CONFIG_KEY, commands);
+    }
+    // Also write a plain JSON file for the service to read, since cosmic_config
+    // stores RON format which serde_json cannot parse.
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let path = home.join(".config").join("kdeconnect").join("runcommand.json");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(json) = serde_json::to_string_pretty(commands) {
+    if let Ok(json) = serde_json::to_string(commands) {
         let _ = std::fs::write(path, json);
     }
 }
@@ -441,11 +451,23 @@ impl Application for SettingsApp {
                     self.new_cmd_name.clear();
                     self.new_cmd_command.clear();
                     save_run_commands(&self.run_commands);
+                    if let Some(device_id) = self.selected_device.clone() {
+                        return Task::perform(
+                            async move { backend::push_local_commands(device_id).await },
+                            |_| Action::App(Message::Refresh),
+                        );
+                    }
                 }
             }
             Message::DeleteRunCommand(id) => {
                 self.run_commands.retain(|c| c["id"].as_str() != Some(&id));
                 save_run_commands(&self.run_commands);
+                if let Some(device_id) = self.selected_device.clone() {
+                    return Task::perform(
+                        async move { backend::push_local_commands(device_id).await },
+                        |_| Action::App(Message::Refresh),
+                    );
+                }
             }
         }
         Task::none()

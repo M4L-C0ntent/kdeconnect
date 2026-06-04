@@ -20,18 +20,29 @@ pub struct LocalCommand {
 
 /// Path to the global run-command config file.
 /// Stored as a JSON array of LocalCommand so the settings UI can read/write it.
-fn commands_config_path() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+fn load_local_commands() -> Vec<LocalCommand> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let path = std::path::PathBuf::from(&home)
+        .join(".config")
         .join("kdeconnect")
-        .join("runcommand.json")
+        .join("runcommand.json");
+    match std::fs::read_to_string(&path) {
+        Ok(json_str) => serde_json::from_str::<Vec<LocalCommand>>(&json_str).unwrap_or_default(),
+        Err(_) => vec![],
+    }
 }
 
-/// Load all locally defined commands (returns empty vec if file is missing).
-fn load_local_commands() -> Vec<LocalCommand> {
-    match std::fs::read_to_string(commands_config_path()) {
-        Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-        Err(_) => vec![],
+fn save_local_commands(commands: &[LocalCommand]) {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let path = std::path::PathBuf::from(&home)
+        .join(".config")
+        .join("kdeconnect")
+        .join("runcommand.json");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(&commands) {
+        let _ = std::fs::write(&path, json);
     }
 }
 
@@ -78,18 +89,56 @@ impl Plugin for RunCommandRequest {
 // ---------------------------------------------------------------------------
 
 impl RunCommand {
-    /// Desktop received a command list from the phone (bidirectional support).
-    /// Not the primary use case — log and ignore for now.
+    /// Phone sent us an updated command list — save any new commands to disk.
     pub async fn received_packet(
         &self,
         device: &crate::device::Device,
         _connection_tx: mpsc::UnboundedSender<crate::event::ConnectionEvent>,
-        _core_tx: mpsc::UnboundedSender<crate::event::CoreEvent>,
+        core_tx: mpsc::UnboundedSender<crate::event::CoreEvent>,
     ) {
-        info!(
-            "[runcommand] received command list from {} (canAddCommand={})",
-            device.device_id, self.can_add_command
-        );
+        // Parse the commandList JSON string into individual commands.
+        let incoming: std::collections::HashMap<String, serde_json::Value> =
+            match serde_json::from_str(&self.command_list) {
+                Ok(map) => map,
+                Err(e) => {
+                    warn!("[runcommand] failed to parse commandList from {}: {}", device.device_id, e);
+                    return;
+                }
+            };
+
+        if incoming.is_empty() {
+            return;
+        }
+
+        // Merge into existing commands — add any that aren't already present by id.
+        let mut commands = load_local_commands();
+        let mut changed = false;
+        for (key, val) in &incoming {
+            let name = val["name"].as_str().unwrap_or("").to_string();
+            let command = val["command"].as_str().unwrap_or("").to_string();
+            if name.is_empty() || command.is_empty() {
+                continue;
+            }
+            if !commands.iter().any(|c| c.id == *key) {
+                commands.push(LocalCommand {
+                    id: key.clone(),
+                    name,
+                    command,
+                });
+                changed = true;
+            }
+        }
+
+        if changed {
+            save_local_commands(&commands);
+            info!(
+                "[runcommand] saved {} new command(s) from {}",
+                incoming.len(),
+                device.device_id
+            );
+            // Re-send updated list back to phone to confirm.
+            send_command_list(&device.device_id, core_tx).await;
+        }
     }
 }
 
@@ -108,7 +157,9 @@ impl RunCommandRequest {
                     "[runcommand] executing '{}': {}",
                     cmd.name, cmd.command
                 );
-                if let Err(e) = std::process::Command::new("sh")
+                if let Err(e) = std::process::Command::new("flatpak-spawn")
+                    .arg("--host")
+                    .arg("sh")
                     .arg("-c")
                     .arg(&cmd.command)
                     .spawn()

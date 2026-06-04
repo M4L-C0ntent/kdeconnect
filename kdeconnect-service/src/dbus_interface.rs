@@ -346,6 +346,16 @@ impl DaemonInterface {
         Ok(())
     }
 
+    /// Push our local command list to a connected device immediately.
+    /// Call this after adding or removing a local command.
+    async fn push_local_commands(&self, device_id: String) -> zbus::fdo::Result<()> {
+        info!("D-Bus: PushLocalCommands called for {}", device_id);
+        self.event_sender
+            .send(AppEvent::PushLocalCommands(kdeconnect_core::device::DeviceId(device_id)))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        Ok(())
+    }
+
     /// Signal: Remote command list received from a paired device.
     /// commands_json is a JSON array of {key, name, command} objects.
     #[zbus(signal)]

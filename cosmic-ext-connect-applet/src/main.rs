@@ -450,12 +450,20 @@ fn main() -> cosmic::iced::Result {
 
     ctrlc::set_handler(move || std::process::exit(0)).ok();
 
-    // In a flatpak the host D-Bus daemon cannot activate /app/bin/kdeconnect-service
-    // because /app only exists inside the sandbox. Spawning here ensures the service
-    // is always running and places it in the same process group as the applet, so
-    // it is killed when the session ends. If the service is already running the new
-    // process exits immediately when the D-Bus name is already taken.
+    // Spawn the service in the same process group so it exits when the session ends.
+    // If the service is already running it exits immediately (D-Bus name already taken).
+    // Explicitly forward HOME so the service reads config from the correct path
+    // regardless of the environment the COSMIC panel provides.
+    let home = std::env::var("HOME").unwrap_or_else(|_| {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .to_string_lossy()
+            .to_string()
+    });
     let _ = std::process::Command::new("kdeconnect-service")
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", std::env::var("XDG_RUNTIME_DIR").unwrap_or_default())
+        .env("XDG_CONFIG_HOME", std::env::var("XDG_CONFIG_HOME").unwrap_or_default())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
