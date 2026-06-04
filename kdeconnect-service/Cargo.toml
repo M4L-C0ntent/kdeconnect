@@ -21,3 +21,4 @@ futures-util = { workspace = true }
 kdeconnect-core = { workspace = true }
 dirs = { workspace = true }
 ron = { workspace = true }
+tracing-appender = { workspace = true }
