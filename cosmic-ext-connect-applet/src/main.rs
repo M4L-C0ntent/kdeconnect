@@ -441,12 +441,40 @@ impl cosmic::Application for KdeConnectApplet {
 }
 
 fn main() -> cosmic::iced::Result {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
+    use tracing_subscriber::prelude::*;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+
+    let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+
+    if std::env::var("KDECONNECT_LOG_FILE").is_ok()
+        && std::path::Path::new("/.flatpak-info").exists()
+    {
+        let log_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let _ = std::fs::create_dir_all(&log_dir);
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_dir.join("applet.log"))
+            .expect("failed to open applet.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file);
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(non_blocking);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+        std::mem::forget(_guard);
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(stderr_layer)
+            .init();
+    }
 
     ctrlc::set_handler(move || std::process::exit(0)).ok();
 
