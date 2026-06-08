@@ -448,7 +448,7 @@ fn main() -> cosmic::iced::Result {
 
     let stderr_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
-    if std::env::var("KDECONNECT_LOG_FILE").is_ok()
+    if std::env::var("KDECONNECT_LOG_FILE").is_ok_and(|v| !v.is_empty())
         && std::path::Path::new("/.flatpak-info").exists()
     {
         let log_dir = dirs::data_dir()
