@@ -12,12 +12,14 @@
     "finish-args": [
         "--share=ipc",
         "--socket=wayland",
-        "--socket=inherit-wayland-socket",
         "--socket=session-bus",
         "--device=dri",
         "--share=network",
         "--filesystem=xdg-download",
-        "--filesystem=xdg-config/cosmic:rw"
+        "--filesystem=xdg-config/cosmic:rw",
+        "--filesystem=xdg-config/kdeconnect:rw",
+        "--talk-name=org.freedesktop.Flatpak",
+        "--socket=pulseaudio"
     ],
     "build-options": {
         "append-path": "/usr/lib/sdk/rust-stable/bin"

@@ -12,6 +12,8 @@ path = "src/lib.rs"
 [dependencies]
 kdeconnect-core = { workspace = true }
 kdeconnect-dbus-client = { workspace = true }
+kdeconnect-varlink = { path = "../kdeconnect-varlink" }
+varlink = { version = "13", features = ["tokio"] }
 ashpd = { workspace = true }
 libcosmic = { workspace = true }
 tokio = { workspace = true }
@@ -28,6 +30,12 @@ percent-encoding = { workspace = true }
 notify-rust = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+zbus = { workspace = true }
+dirs = { workspace = true }
+tracing-appender = { workspace = true }
+i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
+i18n-embed-fl = "0.10"
+rust-embed = "8"
 
 [[bin]]
 name = "cosmic-ext-connect-applet"

@@ -6,9 +6,12 @@ license = "GPL-3.0-only"
 
 [dependencies]
 tokio = { workspace = true }
+tokio-stream = { workspace = true, features = ["sync"] }
 anyhow = { workspace = true }
 zbus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
+kdeconnect-varlink = { path = "../kdeconnect-varlink" }
+varlink = { version = "13", features = ["tokio"] }

@@ -3,15 +3,15 @@
 use anyhow::Result;
 use kdeconnect_core::{
     KdeConnectCore, PacketType, ProtocolPacket,
-    device::{DeviceId, PairState},
+    device::{DeviceId, DeviceState, PairState},
     event::{AppEvent, ConnectionEvent},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
-use tracing::{debug, error, info};
+use tokio::sync::{Mutex, broadcast, mpsc};
+use tracing::{debug, error, info, warn};
 use zbus::object_server::SignalEmitter;
 use zbus::{Connection, interface};
 
@@ -295,6 +295,75 @@ impl DaemonInterface {
         signal_emitter: &SignalEmitter<'_>,
         device_id: String,
     ) -> zbus::Result<()>;
+
+    /// Signal: Clipboard content received from a paired device
+    #[zbus(signal)]
+    async fn clipboard_received(
+        signal_emitter: &SignalEmitter<'_>,
+        content: String,
+    ) -> zbus::Result<()>;
+
+    /// Signal: Battery level/charging state received from a paired device
+    #[zbus(signal)]
+    async fn battery_received(
+        signal_emitter: &SignalEmitter<'_>,
+        device_id: String,
+        level: i32,
+        is_charging: bool,
+    ) -> zbus::Result<()>;
+
+    /// Signal: Cellular signal strength received from a paired device
+    #[zbus(signal)]
+    async fn connectivity_received(
+        signal_emitter: &SignalEmitter<'_>,
+        device_id: String,
+        signal_strength: i32,
+    ) -> zbus::Result<()>;
+
+    /// Execute a remote command on a device by key
+    async fn run_command(&self, device_id: String, key: String) -> zbus::fdo::Result<()> {
+        info!("D-Bus: RunCommand called for {} key={}", device_id, key);
+        let packet = ProtocolPacket::new(
+            PacketType::RunCommandRequest,
+            json!({ "key": key }),
+        );
+        self.event_sender
+            .send(AppEvent::SendPacket(DeviceId(device_id), packet))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Request the remote command list from a device
+    async fn request_run_commands(&self, device_id: String) -> zbus::fdo::Result<()> {
+        info!("D-Bus: RequestRunCommands called for {}", device_id);
+        let packet = ProtocolPacket::new(
+            PacketType::RunCommandRequest,
+            json!({ "requestCommandList": true }),
+        );
+        self.event_sender
+            .send(AppEvent::SendPacket(DeviceId(device_id), packet))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Push our local command list to a connected device immediately.
+    /// Call this after adding or removing a local command.
+    async fn push_local_commands(&self, device_id: String) -> zbus::fdo::Result<()> {
+        info!("D-Bus: PushLocalCommands called for {}", device_id);
+        self.event_sender
+            .send(AppEvent::PushLocalCommands(kdeconnect_core::device::DeviceId(device_id)))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Signal: Remote command list received from a paired device.
+    /// commands_json is a JSON array of {key, name, command} objects.
+    #[zbus(signal)]
+    async fn run_command_list_received(
+        signal_emitter: &SignalEmitter<'_>,
+        device_id: String,
+        commands_json: String,
+    ) -> zbus::Result<()>;
 }
 
 /// SMS-specific D-Bus interface
@@ -432,17 +501,59 @@ impl ContactsInterface {
 pub struct KdeConnectService {
     #[allow(dead_code)]
     connection: Connection,
-    #[allow(dead_code)]
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
-    #[allow(dead_code)]
     devices: Arc<Mutex<HashMap<String, DbusDevice>>>,
 }
 
 impl KdeConnectService {
-    /// Block until the process is killed. All work runs in spawned tasks started
-    /// by `new()`; this just keeps the service process alive.
+    /// Block until the session ends or a signal is received. All work runs in
+    /// spawned tasks started by `new()`; this just keeps the process alive and
+    /// ensures a clean exit so the phone sees the disconnect promptly.
+    ///
+    /// Two exit paths are monitored:
+    /// - SIGTERM / SIGINT: covers systemd-managed local installs.
+    /// - Session D-Bus closed: covers cosmic-session logout, where the session
+    ///   daemon closes all connections without necessarily delivering SIGTERM to
+    ///   processes it did not directly register.
+    pub fn start_varlink(
+        &self,
+        broadcast_tx: broadcast::Sender<crate::varlink_server::VarlinkEvent>,
+    ) {
+        let event_sender = self.event_sender.clone();
+        let devices = self.devices.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                crate::varlink_server::run_varlink_server(event_sender, devices, broadcast_tx)
+                    .await
+            {
+                warn!("Varlink server exited: {:?}", e);
+            }
+        });
+    }
+
     pub async fn run(&self) -> Result<()> {
-        std::future::pending::<()>().await;
+        use futures::StreamExt;
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut sigterm = signal(SignalKind::terminate())?;
+
+        // Dedicated watch connection — no messages are expected on it.
+        // When the session bus closes (cosmic-session logout or systemd user
+        // session teardown), the MessageStream ends and this future completes.
+        let session_ended = async {
+            let Ok(watch_conn) = zbus::Connection::session().await else {
+                std::future::pending::<()>().await;
+                return;
+            };
+            let mut stream = zbus::MessageStream::from(&watch_conn);
+            while stream.next().await.is_some() {}
+        };
+
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => { info!("SIGINT received, shutting down"); }
+            _ = sigterm.recv() => { info!("SIGTERM received, shutting down"); }
+            _ = session_ended => { info!("Session D-Bus closed, shutting down"); }
+        }
         Ok(())
     }
 }
@@ -465,6 +576,40 @@ impl KdeConnectService {
         info!("kdeconnect-core initialized");
 
         let devices = Arc::new(Mutex::new(HashMap::new()));
+
+        // Pre-populate known paired devices as offline so list_devices() returns
+        // them immediately after reboot, before the phone actively reconnects.
+        {
+            use kdeconnect_core::{config::CONFIG_DIR, device::Device as CoreDevice};
+            let mut map = devices.lock().await;
+            if let Some(config_dir) = dirs::config_dir() {
+                let kc_dir = config_dir.join(CONFIG_DIR);
+                if let Ok(mut entries) = tokio::fs::read_dir(&kc_dir).await {
+                    while let Ok(Some(entry)) = entries.next_entry().await {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) == Some("ron") {
+                            if let Ok(raw) = tokio::fs::read_to_string(&path).await {
+                                if let Ok(dev) = ron::de::from_str::<CoreDevice>(&raw) {
+                                    if dev.pair_state == PairState::Paired {
+                                        info!("Restoring offline paired device: {}", dev.name);
+                                        map.insert(
+                                            dev.device_id.0.clone(),
+                                            DbusDevice {
+                                                id: dev.device_id.0.clone(),
+                                                name: dev.name.clone(),
+                                                device_type: "phone".to_string(),
+                                                is_paired: true,
+                                                is_reachable: false,
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let daemon_interface = DaemonInterface {
             event_sender: event_sender.clone(),
@@ -797,6 +942,83 @@ impl KdeConnectService {
 
                 // The D-Bus signal is the primary mechanism — the applet
                 // subscription delivers it immediately and opens the popup.
+            }
+            ConnectionEvent::ClipboardReceived(content) => {
+                info!("Clipboard received ({} bytes)", content.len());
+
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, DaemonInterface>(DAEMON_PATH)
+                    .await?;
+                DaemonInterface::clipboard_received(iface_ref.signal_emitter(), content)
+                    .await?;
+                debug!("ClipboardReceived D-Bus signal emitted");
+            }
+            ConnectionEvent::StateUpdated(state) => {
+                let device_id = match current_device_id.lock().await.clone() {
+                    Some(id) => id,
+                    None => {
+                        debug!("StateUpdated but no current device id");
+                        return Ok(());
+                    }
+                };
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, DaemonInterface>(DAEMON_PATH)
+                    .await?;
+                match state {
+                    DeviceState::Battery { level, charging } => {
+                        DaemonInterface::battery_received(
+                            iface_ref.signal_emitter(),
+                            device_id,
+                            level as i32,
+                            charging,
+                        )
+                        .await?;
+                        debug!("BatteryReceived D-Bus signal emitted");
+                    }
+                    DeviceState::Connectivity((_, signal_strength)) => {
+                        DaemonInterface::connectivity_received(
+                            iface_ref.signal_emitter(),
+                            device_id,
+                            signal_strength,
+                        )
+                        .await?;
+                        debug!("ConnectivityReceived D-Bus signal emitted");
+                    }
+                }
+            }
+            ConnectionEvent::RunCommandListReceived((device_id, commands)) => {
+                info!(
+                    "[dbus] RunCommandListReceived: {} commands from {}",
+                    commands.len(),
+                    device_id.0
+                );
+                let commands_json = serde_json::to_string(
+                    &commands
+                        .iter()
+                        .map(|c| {
+                            json!({
+                                "key": c.key,
+                                "name": c.name,
+                                "command": c.command,
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default();
+
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, DaemonInterface>(DAEMON_PATH)
+                    .await?;
+                DaemonInterface::run_command_list_received(
+                    iface_ref.signal_emitter(),
+                    device_id.0,
+                    commands_json,
+                )
+                .await?;
+                debug!("RunCommandListReceived D-Bus signal emitted");
             }
             _ => {
                 debug!("Unhandled event type received");

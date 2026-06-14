@@ -101,7 +101,17 @@ impl TcpTransport {
     }
 
     pub async fn listen(&self) -> anyhow::Result<()> {
-        let listener = TcpListener::bind(self.listen_addr).await?;
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        // SO_REUSEADDR prevents "address already in use" when the service
+        // restarts before the OS has released the port from the previous instance.
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_reuse_address(true)?;
+        socket.set_nonblocking(true)?;
+        socket.bind(&self.listen_addr.into())?;
+        socket.listen(128)?;
+        let listener = TcpListener::from_std(std::net::TcpListener::from(socket))?;
+        info!("TCP listener bound to {}", self.listen_addr);
 
         loop {
             let event_tx = self.event_tx.clone();
@@ -278,9 +288,30 @@ impl UdpTransport {
     pub async fn new(event_tx: &mpsc::UnboundedSender<TransportEvent>) -> Self {
         let config = GLOBAL_CONFIG.get().unwrap();
 
-        let socket = UdpSocket::bind(config.listen_addr)
-            .await
-            .expect("failed to bind to socket address");
+        let socket = {
+            let mut attempts = 0u32;
+            loop {
+                match UdpSocket::bind(config.listen_addr).await {
+                    Ok(s) => break s,
+                    Err(e) => {
+                        attempts += 1;
+                        if attempts >= 10 {
+                            // Port still held — another instance is almost certainly
+                            // running. Exit cleanly so the caller (the real owner) is
+                            // not disrupted, rather than panicking into the journal.
+                            tracing::error!(
+                                "UDP port {} still in use after {} attempts — \
+                                 another instance may be running, exiting: {}",
+                                config.listen_addr.port(), attempts, e
+                            );
+                            std::process::exit(1);
+                        }
+                        tracing::warn!("UDP bind failed (attempt {}), retrying in 1s: {}", attempts, e);
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        };
         let _ = socket.set_broadcast(true);
         let socket = Arc::new(socket);
 
@@ -546,22 +577,23 @@ async fn filtered_identity_for_device(device_id: &str) -> Identity {
     // Map plugin IDs to the capability strings they own.
     // (incoming_caps, outgoing_caps)
     let cap_map: &[(&str, &[&str], &[&str])] = &[
-        ("battery",             &["kdeconnect.battery"],                                                     &["kdeconnect.battery.request"]),
-        ("clipboard",           &["kdeconnect.clipboard", "kdeconnect.clipboard.connect"],                   &["kdeconnect.clipboard"]),
-        ("connectivity_report", &["kdeconnect.connectivity_report"],                                         &[]),
+        ("battery",             &["kdeconnect.battery"],                                                    &["kdeconnect.battery.request"]),
+        ("clipboard",           &["kdeconnect.clipboard", "kdeconnect.clipboard.connect"],                  &["kdeconnect.clipboard"]),
+        ("connectivity_report", &["kdeconnect.connectivity_report"],                                        &[]),
         ("contacts",            &["kdeconnect.contacts.response_uids_timestamps",
-                                   "kdeconnect.contacts.response_vcards"],                                   &["kdeconnect.contacts.request_all_uids_timestamps",
+                                   "kdeconnect.contacts.response_vcards"],                                  &["kdeconnect.contacts.request_all_uids_timestamps",
                                                                                                               "kdeconnect.contacts.request_vcards_by_uid"]),
-        ("findmyphone",         &[],                                                                         &["kdeconnect.findmyphone.request"]),
-        ("mpris",               &["kdeconnect.mpris"],                                                       &["kdeconnect.mpris.request"]),
-        ("notification",        &["kdeconnect.notification"],                                                 &["kdeconnect.notification.request"]),
-        ("ping",                &["kdeconnect.ping"],                                                         &["kdeconnect.ping"]),
-        ("runcommand",          &[],                                                                         &["kdeconnect.runcommand.request"]),
-        ("share",               &["kdeconnect.share.request"],                                               &["kdeconnect.share.request", "kdeconnect.share.request.update"]),
-        ("sms",                 &["kdeconnect.sms.messages", "kdeconnect.sms.attachment_file"],              &["kdeconnect.sms.request",
+        ("findmyphone",         &[],                                                                        &["kdeconnect.findmyphone.request"]),
+        ("mpris",               &["kdeconnect.mpris", "kdeconnect.mpris.request"],                          &["kdeconnect.mpris", "kdeconnect.mpris.request"]),
+        ("notification",        &["kdeconnect.notification"],                                               &["kdeconnect.notification.request"]),
+        ("ping",                &["kdeconnect.ping"],                                                       &["kdeconnect.ping"]),
+        ("runcommand",          &["kdeconnect.runcommand.request"],                                         &["kdeconnect.runcommand"]),
+        ("share",               &["kdeconnect.share.request"],                                              &["kdeconnect.share.request", "kdeconnect.share.request.update"]),
+        ("sms",                 &["kdeconnect.sms.messages", "kdeconnect.sms.attachment_file"],             &["kdeconnect.sms.request",
                                                                                                               "kdeconnect.sms.request_conversations",
                                                                                                               "kdeconnect.sms.request_conversation",
                                                                                                               "kdeconnect.sms.request_attachment"]),
+        ("telephony",           &["kdeconnect.telephony"],                                                  &["kdeconnect.telephony.request_mute"]),                                                                                                      
     ];
 
     let mut remove_inc: std::collections::HashSet<&str> = std::collections::HashSet::new();
