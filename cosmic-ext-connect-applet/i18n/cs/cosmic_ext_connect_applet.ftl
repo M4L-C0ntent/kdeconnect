@@ -81,6 +81,10 @@ plugin-share-name = Sdílení souborů
 plugin-share-desc = Odesílá a přijímá soubory a odkazy mezi zařízeními.
 plugin-sms-name = SMS zprávy
 plugin-sms-desc = Odesílá a přijímá SMS zprávy z počítače.
+plugin-systemvolume-name = Hlasitost systému
+plugin-systemvolume-desc = Ovládejte hlasitost a ztlumení zvuku počítače z telefonu.
+plugin-telephony-name = Telefonie
+plugin-telephony-desc = Zobrazí oznámení o příchozích, zmeškaných a probíhajících hovorech z telefonu na počítači.
 
 # SMS app
 sms-window-title = SMS - { $device }
