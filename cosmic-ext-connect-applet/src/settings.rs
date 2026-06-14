@@ -64,14 +64,16 @@ struct PluginInfo {
     icon: &'static str,
 }
 
-fn implemented_plugins() -> Vec<PluginInfo> {
-    vec![
-    PluginInfo {
-        id: "battery",
-        name: fl!("plugin-battery-name"),
-        description: fl!("plugin-battery-desc"),
-        icon: "battery-full-symbolic",
-    },
+fn implemented_plugins() -> &'static [PluginInfo] {
+    use std::sync::LazyLock;
+    static PLUGINS: LazyLock<Vec<PluginInfo>> = LazyLock::new(|| {
+        vec![
+        PluginInfo {
+            id: "battery",
+            name: fl!("plugin-battery-name"),
+            description: fl!("plugin-battery-desc"),
+            icon: "battery-full-symbolic",
+        },
     PluginInfo {
         id: "clipboard",
         name: fl!("plugin-clipboard-name"),
@@ -144,7 +146,9 @@ fn implemented_plugins() -> Vec<PluginInfo> {
         description: fl!("plugin-telephony-desc"),
         icon: "phone-symbolic",
     },
-    ]
+        ]
+    });
+    &PLUGINS
 }
 
 // ---------------------------------------------------------------------------
@@ -412,29 +416,23 @@ impl Application for SettingsApp {
                 );
             }
 
-            // A D-Bus service event arrived — refresh device list immediately
-            // so paired/connected state changes appear without waiting for polling.
+            // D-Bus service event — refresh only when the device list/state
+            // actually changes (connect, disconnect, pair). Battery, clipboard,
+            // SMS, etc. don't affect the settings display so we skip them to
+            // avoid continuous view rebuilds during scrolling.
             Message::ServiceEvent(event) => {
-                match &event {
-                    kdeconnect_dbus_client::ServiceEvent::DeviceDisconnected(id) => {
-                        if self.selected_device.as_deref() == Some(id.as_str()) {
-                            // Keep selection — device is just offline, not unpaired.
-                        }
-                    }
-                    kdeconnect_dbus_client::ServiceEvent::DevicePaired(id, device) => {
-                        if !device.is_paired
-                            && self.selected_device.as_deref() == Some(id.as_str())
-                        {
-                            self.selected_device = None;
-                            self.plugin_states.remove(id);
-                        }
-                    }
-                    _ => {}
-                }
-                return Task::perform(
-                    async { backend::fetch_devices().await },
-                    |devices| Action::App(Message::DevicesLoaded(devices)),
+                let needs_refresh = matches!(
+                    event,
+                    kdeconnect_dbus_client::ServiceEvent::DeviceConnected(..)
+                        | kdeconnect_dbus_client::ServiceEvent::DeviceDisconnected(..)
+                        | kdeconnect_dbus_client::ServiceEvent::DevicePaired(..)
                 );
+                if needs_refresh {
+                    return Task::perform(
+                        async { backend::fetch_devices().await },
+                        |devices| Action::App(Message::DevicesLoaded(devices)),
+                    );
+                }
             }
             Message::RunCommandsLoaded(cmds) => {
                 self.run_commands = cmds;
@@ -480,6 +478,7 @@ impl Application for SettingsApp {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
+        let _t = std::time::Instant::now();
         let spacing = cosmic::theme::active().cosmic().spacing;
 
         let content: Element<'_, Message> = match self.active_tab {
@@ -492,12 +491,17 @@ impl Application for SettingsApp {
             Tab::AvailableDevices => self.view_available_devices(&spacing),
         };
 
-        widget::Column::new()
+        let el = widget::Column::new()
             .push(self.view_tab_bar(&spacing))
             .push(widget::divider::horizontal::default())
             .push(content)
             .height(Length::Fill)
-            .into()
+            .into();
+        let dt = _t.elapsed();
+        if dt > std::time::Duration::from_millis(5) {
+            eprintln!("view() total: {:?}", dt);
+        }
+        el
     }
 }
 
@@ -540,6 +544,7 @@ impl SettingsApp {
         &'a self,
         spacing: &cosmic::cosmic_theme::Spacing,
     ) -> Element<'a, Message> {
+        let _t = std::time::Instant::now();
         let paired: Vec<&Device> = self.devices.iter().filter(|d| d.is_paired).collect();
 
         let mut col = widget::Column::new()
@@ -563,7 +568,7 @@ impl SettingsApp {
                 .padding(spacing.space_s),
             );
         } else {
-            for device in paired {
+            for device in &paired {
                 let device_id = device.id.clone();
                 let is_selected = self.selected_device.as_deref() == Some(&device.id);
                 let status_icon = if device.is_reachable {
@@ -630,13 +635,19 @@ impl SettingsApp {
             }
         }
 
-        widget::scrollable(col).height(Length::Fill).into()
+        let el = widget::scrollable(col).height(Length::Fill).into();
+        let dt = _t.elapsed();
+        if dt > std::time::Duration::from_millis(1) {
+            eprintln!("  sidebar: {:?} ({} devices)", dt, paired.len());
+        }
+        el
     }
 
     fn view_plugin_panel<'a>(
         &'a self,
         spacing: &cosmic::cosmic_theme::Spacing,
     ) -> Element<'a, Message> {
+        let _t = std::time::Instant::now();
         let mut col = widget::Column::new()
             .spacing(spacing.space_s)
             .padding(spacing.space_m)
@@ -699,11 +710,11 @@ impl SettingsApp {
                     widget::Column::new()
                         .spacing(2)
                         .push(
-                            widget::text(plugin.name)
+                            widget::text(plugin.name.as_str())
                                 .size(14)
                                 .font(cosmic::font::bold()),
                         )
-                        .push(widget::text(plugin.description).size(12))
+                        .push(widget::text(plugin.description.as_str()).size(12))
                         .width(Length::Fill),
                 )
                 .push(
@@ -724,13 +735,19 @@ impl SettingsApp {
             }
         }
 
-        widget::scrollable(col).height(Length::Fill).into()
+        let el = widget::scrollable(col).height(Length::Fill).into();
+        let dt = _t.elapsed();
+        if dt > std::time::Duration::from_millis(1) {
+            eprintln!("  plugin_panel total: {:?}", dt);
+        }
+        el
     }
 
     fn view_available_devices<'a>(
         &'a self,
         spacing: &cosmic::cosmic_theme::Spacing,
     ) -> Element<'a, Message> {
+        let _t = std::time::Instant::now();
         let available: Vec<&Device> = self
             .devices
             .iter()
@@ -782,7 +799,7 @@ impl SettingsApp {
                 .align_x(Alignment::Center),
             );
         } else {
-            for device in available {
+            for device in &available {
                 let device_id = device.id.clone();
                 let in_progress = *self.pairing_in_progress.get(&device.id).unwrap_or(&false);
 
@@ -817,7 +834,12 @@ impl SettingsApp {
             }
         }
 
-        widget::scrollable(col).height(Length::Fill).into()
+        let el = widget::scrollable(col).height(Length::Fill).into();
+        let dt = _t.elapsed();
+        if dt > std::time::Duration::from_millis(1) {
+            eprintln!("  available_devices: {:?} ({} devices)", dt, available.len());
+        }
+        el
     }
 
     fn view_run_commands_section<'a>(
