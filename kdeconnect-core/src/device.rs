@@ -43,6 +43,7 @@ pub enum PairState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
 pub struct Device {
     pub name: String,
     pub device_id: DeviceId,
@@ -69,10 +70,20 @@ impl Device {
 
         if file_path.exists() {
             let mut buffer = String::new();
-            let mut file = fs::File::open(file_path).await?;
+            let mut file = fs::File::open(&file_path).await?;
             file.read_to_string(&mut buffer).await?;
 
-            return Ok(ron::de::from_str::<Self>(&buffer)?);
+            match ron::de::from_str::<Self>(&buffer) {
+                Ok(device) => return Ok(device),
+                Err(e) => {
+                    tracing::warn!(
+                        "[device] failed to deserialize {}: {}; rebuilding from network identity",
+                        file_path.display(),
+                        e
+                    );
+                    // Fall through — device will need to re-pair on next connection
+                }
+            }
         }
 
         Ok(Self {
