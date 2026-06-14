@@ -64,14 +64,16 @@ struct PluginInfo {
     icon: &'static str,
 }
 
-fn implemented_plugins() -> Vec<PluginInfo> {
-    vec![
-    PluginInfo {
-        id: "battery",
-        name: fl!("plugin-battery-name"),
-        description: fl!("plugin-battery-desc"),
-        icon: "battery-full-symbolic",
-    },
+fn implemented_plugins() -> &'static [PluginInfo] {
+    use std::sync::LazyLock;
+    static PLUGINS: LazyLock<Vec<PluginInfo>> = LazyLock::new(|| {
+        vec![
+        PluginInfo {
+            id: "battery",
+            name: fl!("plugin-battery-name"),
+            description: fl!("plugin-battery-desc"),
+            icon: "battery-full-symbolic",
+        },
     PluginInfo {
         id: "clipboard",
         name: fl!("plugin-clipboard-name"),
@@ -144,7 +146,9 @@ fn implemented_plugins() -> Vec<PluginInfo> {
         description: fl!("plugin-telephony-desc"),
         icon: "phone-symbolic",
     },
-    ]
+        ]
+    });
+    &PLUGINS
 }
 
 // ---------------------------------------------------------------------------
@@ -412,29 +416,23 @@ impl Application for SettingsApp {
                 );
             }
 
-            // A D-Bus service event arrived — refresh device list immediately
-            // so paired/connected state changes appear without waiting for polling.
+            // D-Bus service event — refresh only when the device list/state
+            // actually changes (connect, disconnect, pair). Battery, clipboard,
+            // SMS, etc. don't affect the settings display so we skip them to
+            // avoid continuous view rebuilds during scrolling.
             Message::ServiceEvent(event) => {
-                match &event {
-                    kdeconnect_dbus_client::ServiceEvent::DeviceDisconnected(id) => {
-                        if self.selected_device.as_deref() == Some(id.as_str()) {
-                            // Keep selection — device is just offline, not unpaired.
-                        }
-                    }
-                    kdeconnect_dbus_client::ServiceEvent::DevicePaired(id, device) => {
-                        if !device.is_paired
-                            && self.selected_device.as_deref() == Some(id.as_str())
-                        {
-                            self.selected_device = None;
-                            self.plugin_states.remove(id);
-                        }
-                    }
-                    _ => {}
-                }
-                return Task::perform(
-                    async { backend::fetch_devices().await },
-                    |devices| Action::App(Message::DevicesLoaded(devices)),
+                let needs_refresh = matches!(
+                    event,
+                    kdeconnect_dbus_client::ServiceEvent::DeviceConnected(..)
+                        | kdeconnect_dbus_client::ServiceEvent::DeviceDisconnected(..)
+                        | kdeconnect_dbus_client::ServiceEvent::DevicePaired(..)
                 );
+                if needs_refresh {
+                    return Task::perform(
+                        async { backend::fetch_devices().await },
+                        |devices| Action::App(Message::DevicesLoaded(devices)),
+                    );
+                }
             }
             Message::RunCommandsLoaded(cmds) => {
                 self.run_commands = cmds;
@@ -563,7 +561,7 @@ impl SettingsApp {
                 .padding(spacing.space_s),
             );
         } else {
-            for device in paired {
+            for device in &paired {
                 let device_id = device.id.clone();
                 let is_selected = self.selected_device.as_deref() == Some(&device.id);
                 let status_icon = if device.is_reachable {
@@ -699,11 +697,11 @@ impl SettingsApp {
                     widget::Column::new()
                         .spacing(2)
                         .push(
-                            widget::text(plugin.name)
+                            widget::text(plugin.name.as_str())
                                 .size(14)
                                 .font(cosmic::font::bold()),
                         )
-                        .push(widget::text(plugin.description).size(12))
+                        .push(widget::text(plugin.description.as_str()).size(12))
                         .width(Length::Fill),
                 )
                 .push(
@@ -782,7 +780,7 @@ impl SettingsApp {
                 .align_x(Alignment::Center),
             );
         } else {
-            for device in available {
+            for device in &available {
                 let device_id = device.id.clone();
                 let in_progress = *self.pairing_in_progress.get(&device.id).unwrap_or(&false);
 
