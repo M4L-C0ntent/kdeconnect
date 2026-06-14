@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=KDE Connect Settings
-Name=[cs]=Nastavení KDE Connect
+Name[cs]=Nastavení KDE Connect
 Comment=KDE Connect Settings for COSMIC Desktop
 Comment[cs]=Nastavení KDE Connect pro prostředí COSMIC
 Icon=io.github.hepp3n.kdeconnect
