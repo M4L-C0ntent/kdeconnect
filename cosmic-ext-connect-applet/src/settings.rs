@@ -478,7 +478,6 @@ impl Application for SettingsApp {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let _t = std::time::Instant::now();
         let spacing = cosmic::theme::active().cosmic().spacing;
 
         let content: Element<'_, Message> = match self.active_tab {
@@ -491,17 +490,12 @@ impl Application for SettingsApp {
             Tab::AvailableDevices => self.view_available_devices(&spacing),
         };
 
-        let el = widget::Column::new()
+        widget::Column::new()
             .push(self.view_tab_bar(&spacing))
             .push(widget::divider::horizontal::default())
             .push(content)
             .height(Length::Fill)
-            .into();
-        let dt = _t.elapsed();
-        if dt > std::time::Duration::from_millis(5) {
-            eprintln!("view() total: {:?}", dt);
-        }
-        el
+            .into()
     }
 }
 
@@ -544,7 +538,6 @@ impl SettingsApp {
         &'a self,
         spacing: &cosmic::cosmic_theme::Spacing,
     ) -> Element<'a, Message> {
-        let _t = std::time::Instant::now();
         let paired: Vec<&Device> = self.devices.iter().filter(|d| d.is_paired).collect();
 
         let mut col = widget::Column::new()
@@ -635,19 +628,13 @@ impl SettingsApp {
             }
         }
 
-        let el = widget::scrollable(col).height(Length::Fill).into();
-        let dt = _t.elapsed();
-        if dt > std::time::Duration::from_millis(1) {
-            eprintln!("  sidebar: {:?} ({} devices)", dt, paired.len());
-        }
-        el
+        widget::scrollable(col).height(Length::Fill).into()
     }
 
     fn view_plugin_panel<'a>(
         &'a self,
         spacing: &cosmic::cosmic_theme::Spacing,
     ) -> Element<'a, Message> {
-        let _t = std::time::Instant::now();
         let mut col = widget::Column::new()
             .spacing(spacing.space_s)
             .padding(spacing.space_m)
@@ -735,19 +722,13 @@ impl SettingsApp {
             }
         }
 
-        let el = widget::scrollable(col).height(Length::Fill).into();
-        let dt = _t.elapsed();
-        if dt > std::time::Duration::from_millis(1) {
-            eprintln!("  plugin_panel total: {:?}", dt);
-        }
-        el
+        widget::scrollable(col).height(Length::Fill).into()
     }
 
     fn view_available_devices<'a>(
         &'a self,
         spacing: &cosmic::cosmic_theme::Spacing,
     ) -> Element<'a, Message> {
-        let _t = std::time::Instant::now();
         let available: Vec<&Device> = self
             .devices
             .iter()
@@ -834,12 +815,7 @@ impl SettingsApp {
             }
         }
 
-        let el = widget::scrollable(col).height(Length::Fill).into();
-        let dt = _t.elapsed();
-        if dt > std::time::Duration::from_millis(1) {
-            eprintln!("  available_devices: {:?} ({} devices)", dt, available.len());
-        }
-        el
+        widget::scrollable(col).height(Length::Fill).into()
     }
 
     fn view_run_commands_section<'a>(
