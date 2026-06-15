@@ -12,6 +12,7 @@ pub fn create_popup_view<'a>(
     devices: &'a HashMap<String, Device>,
     expanded_device: Option<&'a String>,
     pairing_requests: Option<&'a HashMap<String, String>>,
+    accent_color: cosmic::iced::Color,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::active().cosmic().spacing;
     let mut content = widget::Column::new()
@@ -82,6 +83,14 @@ pub fn create_popup_view<'a>(
                         .spacing(spacing.space_xs),
                 )
                 .padding(spacing.space_s)
+                .style(move |_: &cosmic::Theme| cosmic::widget::container::Style {
+                    border: cosmic::iced::Border {
+                        color: accent_color,
+                        width: 1.5,
+                        radius: 8.0.into(),
+                    },
+                    ..Default::default()
+                })
                 .class(cosmic::theme::Container::Card)
                 .width(Length::Fill);
 
@@ -104,10 +113,14 @@ pub fn create_popup_view<'a>(
                 .center_x(Length::Fill),
         );
     } else {
-        content = content.push(widget::text(fl!("devices-header")).size(14).font(cosmic::font::bold()));
+        content = content.push(
+            widget::text(fl!("devices-header"))
+                .size(14)
+                .font(cosmic::font::bold())
+        );
 
         for device in paired_devices {
-            content = content.push(create_device_card(device, &spacing, expanded_device));
+            content = content.push(create_device_card(device, &spacing, expanded_device, accent_color));
         }
     }
 
@@ -125,6 +138,7 @@ fn create_device_card<'a>(
     device: &'a Device,
     spacing: &cosmic::cosmic_theme::Spacing,
     expanded_device: Option<&'a String>,
+    _accent_color: cosmic::iced::Color,
 ) -> Element<'a, Message> {
     let is_expanded = expanded_device == Some(&device.id);
     let is_online = device.is_reachable;
