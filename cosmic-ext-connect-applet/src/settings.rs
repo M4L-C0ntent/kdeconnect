@@ -193,6 +193,7 @@ pub enum Message {
 
 pub struct SettingsApp {
     core: Core,
+    accent_color: cosmic::iced::Color,
     active_tab: Tab,
     devices: Vec<Device>,
     selected_device: Option<String>,
@@ -250,6 +251,8 @@ impl Application for SettingsApp {
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Action<Self::Message>>) {
         let mut app = Self {
             core,
+            accent_color: cosmic_ext_connect_applet::theme::try_load_cosmic_accent()
+               .unwrap_or(cosmic_ext_connect_applet::theme::FALLBACK_TEAL),
             active_tab: Tab::PairedDevices,
             devices: Vec::new(),
             selected_device: None,
@@ -514,6 +517,7 @@ impl SettingsApp {
         } else {
             widget::button::text(fl!("settings-tab-paired"))
                 .on_press(Message::SelectTab(Tab::PairedDevices))
+                .class(cosmic_ext_connect_applet::theme::accent_link_button(self.accent_color))
         };
 
         let available_btn = if self.active_tab == Tab::AvailableDevices {
@@ -522,6 +526,7 @@ impl SettingsApp {
         } else {
             widget::button::text(fl!("settings-tab-available"))
                 .on_press(Message::SelectTab(Tab::AvailableDevices))
+                .class(cosmic_ext_connect_applet::theme::accent_link_button(self.accent_color))
         };
 
         widget::Row::new()
@@ -590,16 +595,19 @@ impl SettingsApp {
                     )
                     .push(widget::icon::from_name(status_icon).size(14));
 
+                let accent = self.accent_color;
                 let btn = widget::button::custom(item)
                     .class(cosmic::theme::Button::Custom {
-                        active: Box::new(|focused, theme| {
+                        active: Box::new(move |focused, theme| {
                             let mut s = theme.active(focused, false, &cosmic::theme::Button::Text);
                             s.border_radius = cosmic::iced::Radius::from(0.0);
+                            s.text_color = Some(accent);
                             s
                         }),
-                        hovered: Box::new(|focused, theme| {
+                        hovered: Box::new(move |focused, theme| {
                             let mut s = theme.hovered(focused, false, &cosmic::theme::Button::Text);
                             s.border_radius = cosmic::iced::Radius::from(0.0);
+                            s.text_color = Some(accent);
                             s
                         }),
                         disabled: Box::new(|theme| {
@@ -607,9 +615,10 @@ impl SettingsApp {
                             s.border_radius = cosmic::iced::Radius::from(0.0);
                             s
                         }),
-                        pressed: Box::new(|focused, theme| {
+                        pressed: Box::new(move |focused, theme| {
                             let mut s = theme.pressed(focused, false, &cosmic::theme::Button::Text);
                             s.border_radius = cosmic::iced::Radius::from(0.0);
+                            s.text_color = Some(accent);
                             s
                         }),
                     })

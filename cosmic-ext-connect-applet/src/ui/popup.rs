@@ -4,6 +4,7 @@ use cosmic::app::Core;
 use cosmic::iced::{Alignment, Length};
 use cosmic::{Element, widget};
 use std::collections::HashMap;
+use crate::theme;
 
 /// Build the popup view using the real application Core so popup_container
 /// has proper applet context, theme, and sizing.
@@ -25,7 +26,8 @@ pub fn create_popup_view<'a>(
             .push(
                 widget::text(fl!("applet-title"))
                     .size(18)
-                    .width(Length::Fill),
+                    .width(Length::Fill)
+                    .class(cosmic::theme::Text::Color(accent_color)),
             )
             .push(widget::button::standard(fl!("applet-settings")).on_press(Message::OpenSettings))
             .spacing(spacing.space_xs)
@@ -41,7 +43,8 @@ pub fn create_popup_view<'a>(
             content = content.push(
                 widget::text(fl!("pairing-requests"))
                     .size(14)
-                    .font(cosmic::font::bold()),
+                    .font(cosmic::font::bold())
+                    .class(cosmic::theme::Text::Color(accent_color)),
             );
 
             let mut sorted: Vec<(&String, &String)> = requests.iter().collect();
@@ -117,6 +120,7 @@ pub fn create_popup_view<'a>(
             widget::text(fl!("devices-header"))
                 .size(14)
                 .font(cosmic::font::bold())
+                .class(cosmic::theme::Text::Color(accent_color)),
         );
 
         for device in paired_devices {
@@ -138,7 +142,7 @@ fn create_device_card<'a>(
     device: &'a Device,
     spacing: &cosmic::cosmic_theme::Spacing,
     expanded_device: Option<&'a String>,
-    _accent_color: cosmic::iced::Color,
+    accent_color: cosmic::iced::Color,
 ) -> Element<'a, Message> {
     let is_expanded = expanded_device == Some(&device.id);
     let is_online = device.is_reachable;
@@ -179,7 +183,7 @@ fn create_device_card<'a>(
     let device_button = widget::button::custom(name_row)
         .on_press(Message::ToggleDeviceMenu(device.id.clone()))
         .width(Length::Fill)
-        .class(cosmic::theme::Button::Text);
+        .class(theme::accent_link_button(accent_color));
 
     let mut col = widget::Column::new().push(device_button);
 
@@ -189,13 +193,14 @@ fn create_device_card<'a>(
         menu_items = menu_items.push(
             widget::text(fl!("quick-actions-header"))
                 .size(12)
-                .font(cosmic::font::bold()),
+                .font(cosmic::font::bold())
+                .class(cosmic::theme::Text::Color(accent_color)),
         );
         menu_items = menu_items.push(
             widget::button::text(fl!("quick-actions-ping"))
                 .on_press(Message::PingDevice(device.id.clone()))
                 .width(Length::Fill)
-                .class(cosmic::theme::Button::Text),
+                .class(theme::accent_link_button(accent_color)),
         );
 
         if device.has_findmyphone {
@@ -203,7 +208,7 @@ fn create_device_card<'a>(
                 widget::button::text(fl!("quick-actions-find-phone"))
                     .on_press(Message::RingDevice(device.id.clone()))
                     .width(Length::Fill)
-                    .class(cosmic::theme::Button::Text),
+                    .class(theme::accent_link_button(accent_color)),
             );
         }
 
@@ -212,7 +217,7 @@ fn create_device_card<'a>(
                 widget::button::text(fl!("quick-actions-share-clipboard"))
                     .on_press(Message::ShareClipboard(device.id.clone()))
                     .width(Length::Fill)
-                    .class(cosmic::theme::Button::Text),
+                    .class(theme::accent_link_button(accent_color)),
             );
         }
 
@@ -220,7 +225,7 @@ fn create_device_card<'a>(
             widget::button::text(fl!("quick-actions-sms"))
                 .on_press(Message::SendSMS(device.id.clone()))
                 .width(Length::Fill)
-                .class(cosmic::theme::Button::Text),
+                .class(theme::accent_link_button(accent_color)),
         );
 
         if device.has_share || device.has_sftp {
@@ -236,7 +241,7 @@ fn create_device_card<'a>(
                     widget::button::text(fl!("quick-actions-send-file"))
                         .on_press(Message::SendFiles(device.id.clone()))
                         .width(Length::Fill)
-                        .class(cosmic::theme::Button::Text),
+                        .class(theme::accent_link_button(accent_color)),
                 );
                 menu_items = menu_items.push_maybe(if let Some(progress) = device.share_progress {
                     Some(widget::progress_bar::determinate_linear(progress as f32 / 100.0))
@@ -250,7 +255,7 @@ fn create_device_card<'a>(
                     widget::button::text(fl!("quick-actions-browse-device"))
                         .on_press(Message::BrowseDevice(device.id.clone()))
                         .width(Length::Fill)
-                        .class(cosmic::theme::Button::Text),
+                        .class(theme::accent_link_button(accent_color)),
                 );
             }
         }

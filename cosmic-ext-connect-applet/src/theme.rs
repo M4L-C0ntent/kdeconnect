@@ -2,6 +2,7 @@
 //! the host filesystem. `dirs::config_dir()` resolves to the Flatpak sandbox
 //! when running as a Flatpak, so we always use `dirs::home_dir()` instead.
 
+use cosmic::widget::button::Catalog;
 use serde::Deserialize;
 
 /// COSMIC's default teal, used as a fallback when the host theme cannot be read.
@@ -62,4 +63,28 @@ pub fn try_load_cosmic_accent() -> Option<cosmic::iced::Color> {
         b: parsed.base.blue,
         a: 1.0,
     })
+}
+
+/// A `Button::Custom` class that mirrors `Button::Text` but overrides the text
+/// colour with the host's real accent. Needed because `Button::Text`'s default
+/// styling pulls from the sandboxed (always-teal) theme under Flatpak.
+pub fn accent_link_button(accent: cosmic::iced::Color) -> cosmic::theme::Button {
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |focused, theme| {
+            let mut style = theme.active(focused, false, &cosmic::theme::Button::Text);
+            style.text_color = Some(accent);
+            style
+        }),
+        hovered: Box::new(move |focused, theme| {
+            let mut style = theme.hovered(focused, false, &cosmic::theme::Button::Text);
+            style.text_color = Some(accent);
+            style
+        }),
+        pressed: Box::new(move |focused, theme| {
+            let mut style = theme.pressed(focused, false, &cosmic::theme::Button::Text);
+            style.text_color = Some(accent);
+            style
+        }),
+        disabled: Box::new(|theme| theme.disabled(&cosmic::theme::Button::Text)),
+    }
 }
