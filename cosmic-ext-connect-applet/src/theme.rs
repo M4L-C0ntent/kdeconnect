@@ -88,3 +88,21 @@ pub fn accent_link_button(accent: cosmic::iced::Color) -> cosmic::theme::Button 
         disabled: Box::new(|theme| theme.disabled(&cosmic::theme::Button::Text)),
     }
 }
+
+/// Loads a named symbolic icon and recolors its fill to the given accent.
+pub fn accent_icon(name: &str, accent: cosmic::iced::Color) -> cosmic::widget::icon::Handle {
+    let hex = format!(
+        "#{:02x}{:02x}{:02x}",
+        (accent.r * 255.0).round() as u8,
+        (accent.g * 255.0).round() as u8,
+        (accent.b * 255.0).round() as u8,
+    );
+
+    cosmic::widget::icon::from_name(name)
+        .path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|svg| {
+            cosmic::widget::icon::from_svg_bytes(svg.replace("#232323", &hex).into_bytes())
+        })
+        .unwrap_or_else(|| cosmic::widget::icon::from_name(name).handle())
+}

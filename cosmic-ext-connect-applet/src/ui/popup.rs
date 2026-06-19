@@ -148,7 +148,7 @@ fn create_device_card<'a>(
     let is_online = device.is_reachable;
 
     let mut name_row = widget::Row::new()
-        .push(widget::icon::from_name(device.device_icon()).size(20))
+        .push(widget::icon(theme::accent_icon(device.device_icon(), accent_color)).size(20))
         .push(widget::text(&device.name).size(14).width(Length::Fill))
         .spacing(spacing.space_xs)
         .align_y(Alignment::Center);
@@ -157,25 +157,24 @@ fn create_device_card<'a>(
         name_row = name_row.push(widget::text(fl!("devices-offline")).size(11));
     } else {
         if let Some(signal_icon) = device.signal_icon() {
-            name_row = name_row.push(widget::icon::from_name(signal_icon).size(16));
+            name_row = name_row.push(widget::icon(theme::accent_icon(signal_icon, accent_color)).size(16));
         }
         if let Some(level) = device.battery_level {
             name_row = name_row.push(
                 widget::Row::new()
                     .spacing(2)
                     .align_y(Alignment::Center)
-                    .push(widget::icon::from_name(device.battery_icon()).size(16))
+                    .push(widget::icon(theme::accent_icon(device.battery_icon(), accent_color)).size(16))
                     .push(widget::text(format!("{}%", level)).size(11)),
             );
         }
     }
 
     name_row = name_row.push(
-        widget::button::icon(widget::icon::from_name(if is_expanded {
-            "go-up-symbolic"
-        } else {
-            "go-down-symbolic"
-        }))
+        widget::button::icon(theme::accent_icon(
+            if is_expanded { "go-up-symbolic" } else { "go-down-symbolic" },
+            accent_color,
+        ))
         .on_press(Message::ToggleDeviceMenu(device.id.clone()))
         .class(cosmic::theme::Button::Icon),
     );
