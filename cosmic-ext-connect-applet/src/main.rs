@@ -12,6 +12,7 @@ use cosmic::iced::{Limits, Subscription};
 use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
 use cosmic::{Element, Task, widget};
 use std::collections::HashMap;
+use cosmic_ext_connect_applet::theme;
 use tracing::{debug, error, info};
 
 pub struct KdeConnectApplet {
@@ -21,6 +22,7 @@ pub struct KdeConnectApplet {
     expanded_device: Option<String>,
     /// Pending pairing requests: device_id → device_name
     pairing_requests: HashMap<String, String>,
+    accent_color: cosmic::iced::Color,
 }
 
 impl cosmic::Application for KdeConnectApplet {
@@ -49,6 +51,8 @@ impl cosmic::Application for KdeConnectApplet {
             devices: HashMap::new(),
             expanded_device: None,
             pairing_requests: HashMap::new(),
+            accent_color: theme::try_load_cosmic_accent()
+                .unwrap_or(theme::FALLBACK_TEAL),
         };
 
         (app, Task::none())
@@ -61,6 +65,8 @@ impl cosmic::Application for KdeConnectApplet {
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
         match message {
             Message::TogglePopup => {
+                self.accent_color = theme::try_load_cosmic_accent()
+                    .unwrap_or(theme::FALLBACK_TEAL);
                 return if let Some(p) = self.popup.take() {
                     destroy_popup(p)
                 } else {
@@ -389,6 +395,7 @@ impl cosmic::Application for KdeConnectApplet {
             &self.devices,
             self.expanded_device.as_ref(),
             Some(&self.pairing_requests),
+            self.accent_color,
         )
     }
 
