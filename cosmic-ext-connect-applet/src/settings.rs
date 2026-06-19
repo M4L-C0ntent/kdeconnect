@@ -578,7 +578,7 @@ impl SettingsApp {
                 let item = widget::Row::new()
                     .spacing(spacing.space_s)
                     .align_y(Alignment::Center)
-                    .push(widget::icon::from_name(device.device_icon()).size(20))
+                    .push(widget::icon(cosmic_ext_connect_applet::theme::accent_icon(device.device_icon(), self.accent_color)).size(20))
                     .push(
                         widget::Column::new()
                             .spacing(2)
@@ -593,7 +593,7 @@ impl SettingsApp {
                             )
                             .width(Length::Fill),
                     )
-                    .push(widget::icon::from_name(status_icon).size(14));
+                    .push(widget::icon(cosmic_ext_connect_applet::theme::accent_icon(status_icon, self.accent_color)).size(14));
 
                 let accent = self.accent_color;
                 let btn = widget::button::custom(item)
@@ -813,6 +813,7 @@ impl SettingsApp {
                     } else {
                         widget::button::suggested(fl!("available-devices-pair"))
                             .on_press(Message::PairDevice(device_id))
+                            .class(cosmic_ext_connect_applet::theme::accent_filled_button(self.accent_color))
                     });
 
                 col = col.push(
@@ -885,7 +886,8 @@ impl SettingsApp {
         );
         col = col.push(
             widget::button::suggested(fl!("run-commands-add-button"))
-                .on_press(Message::AddRunCommand),
+                .on_press(Message::AddRunCommand)
+                .class(cosmic_ext_connect_applet::theme::accent_filled_button(self.accent_color)),
         );
 
         widget::container(col)

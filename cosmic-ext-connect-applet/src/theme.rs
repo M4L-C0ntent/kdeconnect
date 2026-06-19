@@ -89,6 +89,29 @@ pub fn accent_link_button(accent: cosmic::iced::Color) -> cosmic::theme::Button 
     }
 }
 
+/// A `Button::Custom` class that mirrors `Button::Suggested` but fills the
+/// background with the host's real accent, for the same sandboxed-theme
+pub fn accent_filled_button(accent: cosmic::iced::Color) -> cosmic::theme::Button {
+    cosmic::theme::Button::Custom {
+        active: Box::new(move |focused, theme| {
+            let mut style = theme.active(focused, false, &cosmic::theme::Button::Suggested);
+            style.background = Some(cosmic::iced::Background::Color(accent));
+            style
+        }),
+        hovered: Box::new(move |focused, theme| {
+            let mut style = theme.hovered(focused, false, &cosmic::theme::Button::Suggested);
+            style.background = Some(cosmic::iced::Background::Color(accent));
+            style
+        }),
+        pressed: Box::new(move |focused, theme| {
+            let mut style = theme.pressed(focused, false, &cosmic::theme::Button::Suggested);
+            style.background = Some(cosmic::iced::Background::Color(accent));
+            style
+        }),
+        disabled: Box::new(|theme| theme.disabled(&cosmic::theme::Button::Suggested)),
+    }
+}
+
 /// Loads a named symbolic icon and recolors its fill to the given accent.
 pub fn accent_icon(name: &str, accent: cosmic::iced::Color) -> cosmic::widget::icon::Handle {
     let hex = format!(
