@@ -277,6 +277,16 @@ pub async fn set_plugin_enabled(device_id: String, plugin_id: String, enabled: b
 }
 
 pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
+    if let Some(Ok(reply)) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.get_disabled_plugins(id).call().await
+        }
+    }).await {
+        return reply.plugins;
+    }
+
     let g = CLIENT.lock().await;
     let Some(client) = g.as_ref() else {
         warn!("D-Bus client not initialized");

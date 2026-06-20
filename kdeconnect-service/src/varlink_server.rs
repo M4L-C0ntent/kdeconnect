@@ -7,7 +7,7 @@ use kdeconnect_varlink::iface::{
     Call_ListDevices, Call_PairDevice, Call_UnpairDevice, Call_SendPing,
     Call_SendFiles, Call_SendClipboard, Call_RunCommand,
     Call_RingDevice, Call_BroadcastIdentity, Call_RequestRunCommands,
-    Call_SetPluginEnabled, Call_GetPluginEnabled,
+    Call_SetPluginEnabled, Call_GetPluginEnabled, Call_GetDisabledPlugins,
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
 };
 use kdeconnect_varlink::socket_address;
@@ -137,6 +137,14 @@ impl VarlinkInterface for KdeConnectVarlinkService {
     ) -> varlink::Result<()> {
         let disabled = kdeconnect_core::plugin_config::load_disabled_plugins(&device_id).await;
         call.reply(!disabled.contains(&plugin))
+    }
+
+    async fn get_disabled_plugins(
+        &self, call: &mut dyn Call_GetDisabledPlugins,
+        device_id: String,
+    ) -> varlink::Result<()> {
+        let disabled = kdeconnect_core::plugin_config::load_disabled_plugins(&device_id).await;
+        call.reply(disabled.into_iter().collect())
     }
 
     async fn accept_pairing(&self, call: &mut dyn Call_AcceptPairing, device_id: String) -> varlink::Result<()> {

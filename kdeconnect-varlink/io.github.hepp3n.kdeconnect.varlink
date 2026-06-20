@@ -25,6 +25,7 @@ method BroadcastIdentity() -> ()
 method RequestRunCommands(device_id: string) -> ()
 method SetPluginEnabled(device_id: string, plugin: string, enabled: bool) -> ()
 method GetPluginEnabled(device_id: string, plugin: string) -> (enabled: bool)
+method GetDisabledPlugins(device_id: string) -> (plugins: []string)
 method AcceptPairing(device_id: string) -> ()
 method RejectPairing(device_id: string) -> ()
 
