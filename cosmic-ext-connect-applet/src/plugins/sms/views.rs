@@ -163,6 +163,7 @@ fn view_conversations_list<'a>(
         widget::container(
             widget::button::suggested(fl!("sms-new-chat-start"))
                 .on_press(SmsMessage::OpenNewChatDialog)
+                .class(crate::theme::accent_filled_button(app.accent_color))
                 .width(Length::Fill),
         )
         .padding(spacing.space_s),
@@ -238,15 +239,18 @@ fn view_conversation_item<'a>(
     let display_name =
         get_contact_name(app, &conv.phone_number).unwrap_or_else(|| conv.phone_number.clone());
 
+    let accent = app.accent_color;
     let flat_button_class = cosmic::theme::Button::Custom {
-        active: Box::new(|focused, theme| {
+        active: Box::new(move |focused, theme| {
             let mut s = theme.active(focused, false, &cosmic::theme::Button::Text);
             s.border_radius = cosmic::iced::Radius::from(0.0);
+            s.text_color = Some(accent);
             s
         }),
-        hovered: Box::new(|focused, theme| {
+        hovered: Box::new(move |focused, theme| {
             let mut s = theme.hovered(focused, false, &cosmic::theme::Button::Text);
             s.border_radius = cosmic::iced::Radius::from(0.0);
+            s.text_color = Some(accent);
             s
         }),
         disabled: Box::new(|theme| {
@@ -254,9 +258,10 @@ fn view_conversation_item<'a>(
             s.border_radius = cosmic::iced::Radius::from(0.0);
             s
         }),
-        pressed: Box::new(|focused, theme| {
+        pressed: Box::new(move |focused, theme| {
             let mut s = theme.pressed(focused, false, &cosmic::theme::Button::Text);
             s.border_radius = cosmic::iced::Radius::from(0.0);
+            s.text_color = Some(accent);
             s
         }),
     };
@@ -465,7 +470,11 @@ fn view_message_input<'a>(
                 .padding(spacing.space_s)
                 .width(Length::Fill),
         )
-        .push(widget::button::suggested(fl!("sms-send")).on_press(SmsMessage::SendMessage))
+        .push(
+            widget::button::suggested(fl!("sms-send"))
+                .on_press(SmsMessage::SendMessage)
+                .class(crate::theme::accent_filled_button(app.accent_color))
+        )
         .spacing(spacing.space_xs)
         .align_y(Alignment::Center);
 
