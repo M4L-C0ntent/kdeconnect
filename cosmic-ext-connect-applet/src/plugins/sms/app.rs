@@ -144,7 +144,14 @@ impl Application for SmsWindow {
 
                 loop {
                     debug!("SMS subscribing to events");
-                    let mut event_stream = client.listen_for_events().await;
+                    let mut event_stream = match client.listen_for_events().await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("Failed to subscribe to SMS event stream: {:?}", e);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
 
                     // Subscribe FIRST, then request — contacts response is a
                     // fire-and-forget D-Bus signal; if we request before subscribing

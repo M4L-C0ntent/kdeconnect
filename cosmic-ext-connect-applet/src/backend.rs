@@ -334,7 +334,14 @@ pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent>
             };
 
             info!("Event stream: D-Bus client ready, subscribing");
-            let mut stream = client.listen_for_events().await;
+            let mut stream = match client.listen_for_events().await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to subscribe to event stream: {:?}", e);
+                    sleep(Duration::from_secs(1)).await;
+                    continue 'reconnect;
+                }
+            };
 
             loop {
                 tokio::select! {
