@@ -42,7 +42,7 @@ pub struct DbusDevice {
 
 fn device_cache_dir(device_id: &str) -> std::path::PathBuf {
     let base = dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("~/.local/share"));
-    base.join("kdeconnect").join(device_id)
+    base.join(kdeconnect_core::config::CONFIG_DIR).join(device_id)
 }
 
 async fn save_contacts_cache(device_id: &str, contacts: &HashMap<String, String>) {
@@ -224,7 +224,7 @@ impl DaemonInterface {
     async fn get_disabled_plugins(&self, device_id: String) -> Vec<String> {
         let path = dirs::config_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-            .join("kdeconnect")
+            .join(kdeconnect_core::config::CONFIG_DIR)
             .join(format!("{}_plugins.json", device_id));
         match tokio::fs::read_to_string(&path).await {
             Ok(json) => serde_json::from_str::<Vec<String>>(&json).unwrap_or_default(),
@@ -370,8 +370,6 @@ impl DaemonInterface {
 pub struct SmsInterface {
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     sms_cache: Arc<Mutex<Option<String>>>,
-    #[allow(dead_code)]
-    current_device_id: Arc<Mutex<Option<String>>>,
 }
 
 #[interface(name = "io.github.hepp3n.kdeconnect.Sms")]
@@ -557,9 +555,6 @@ impl KdeConnectService {
         Ok(())
     }
 }
-/// Tracks devices that have already received an initial SMS sync this session.
-type SmsSyncedSet = Arc<Mutex<std::collections::HashSet<String>>>;
-
 impl KdeConnectService {
     pub async fn new() -> Result<Self> {
         info!("Initializing KDE Connect D-Bus service");
@@ -627,7 +622,6 @@ impl KdeConnectService {
         let sms_interface = SmsInterface {
             event_sender: event_sender.clone(),
             sms_cache: sms_cache.clone(),
-            current_device_id: current_device_id.clone(),
         };
         connection
             .object_server()
@@ -647,7 +641,6 @@ impl KdeConnectService {
         let conn_clone = connection.clone();
         let devices_clone = devices.clone();
         let event_sender_clone = event_sender.clone();
-        let sms_synced: SmsSyncedSet = Arc::new(Mutex::new(std::collections::HashSet::new()));
 
         tokio::spawn(async move {
             debug!("Event handler started");
@@ -659,7 +652,6 @@ impl KdeConnectService {
                     &event_sender_clone,
                     &sms_cache,
                     &current_device_id,
-                    &sms_synced,
                 )
                 .await
                 {
@@ -694,7 +686,6 @@ impl KdeConnectService {
         event_sender: &Arc<mpsc::UnboundedSender<AppEvent>>,
         sms_cache: &Arc<Mutex<Option<String>>>,
         current_device_id: &Arc<Mutex<Option<String>>>,
-        sms_synced: &SmsSyncedSet,
     ) -> Result<()> {
         match event {
             ConnectionEvent::Connected((device_id, device)) => {
@@ -757,11 +748,6 @@ impl KdeConnectService {
                         }
                     }
 
-                    let already_synced = sms_synced.lock().await.contains(&device_id.0);
-                    if !already_synced {
-                        sms_synced.lock().await.insert(device_id.0.clone());
-                    }
-
                     // Note: auto-requests for SMS/contacts are now handled in
                     // kdeconnect-core with plugin-enabled gating.
                 }
@@ -817,8 +803,6 @@ impl KdeConnectService {
             }
             ConnectionEvent::Disconnected(device_id) => {
                 info!("Device disconnected: {}", device_id.0);
-
-                sms_synced.lock().await.remove(&device_id.0);
 
                 // Mark unreachable but keep in map so UI can still show it
                 // and allow pairing attempts after reconnect.
