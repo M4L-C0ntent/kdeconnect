@@ -29,6 +29,13 @@ method GetDisabledPlugins(device_id: string) -> (plugins: []string)
 method AcceptPairing(device_id: string) -> ()
 method RejectPairing(device_id: string) -> ()
 
+method RequestConversations(device_id: string) -> ()
+method RequestConversation(device_id: string, thread_id: int) -> ()
+method SendSms(device_id: string, phone_number: string, message: string) -> ()
+method GetCachedSms(device_id: string) -> (json: string)
+method RequestContacts(device_id: string) -> ()
+method GetCachedContacts(device_id: string) -> (json: string)
+
 method Subscribe() -> (
     event_type: string,
     device_id: string,

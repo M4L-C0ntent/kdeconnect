@@ -9,6 +9,8 @@ use kdeconnect_varlink::iface::{
     Call_RingDevice, Call_BroadcastIdentity, Call_RequestRunCommands,
     Call_SetPluginEnabled, Call_GetPluginEnabled, Call_GetDisabledPlugins,
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
+    Call_RequestConversations, Call_RequestConversation, Call_SendSms,
+    Call_GetCachedSms, Call_RequestContacts, Call_GetCachedContacts,
 };
 use kdeconnect_varlink::socket_address;
 use kdeconnect_core::{PacketType, ProtocolPacket, device::DeviceId, event::AppEvent};
@@ -39,6 +41,7 @@ pub struct VarlinkEvent {
 pub struct KdeConnectVarlinkService {
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     devices: Arc<tokio::sync::Mutex<std::collections::HashMap<String, DbusDevice>>>,
+    sms_cache: Arc<tokio::sync::Mutex<Option<String>>>,
     broadcast_tx: broadcast::Sender<VarlinkEvent>,
 }
 
@@ -46,9 +49,10 @@ impl KdeConnectVarlinkService {
     pub fn new(
         event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
         devices: Arc<tokio::sync::Mutex<std::collections::HashMap<String, DbusDevice>>>,
+        sms_cache: Arc<tokio::sync::Mutex<Option<String>>>,
         broadcast_tx: broadcast::Sender<VarlinkEvent>,
     ) -> Self {
-        Self { event_sender, devices, broadcast_tx }
+        Self { event_sender, devices, sms_cache, broadcast_tx }
     }
 }
 
@@ -157,6 +161,59 @@ impl VarlinkInterface for KdeConnectVarlinkService {
         call.reply()
     }
 
+    async fn request_conversations(&self, call: &mut dyn Call_RequestConversations, device_id: String) -> varlink::Result<()> {
+        let packet = ProtocolPacket::new(PacketType::SmsRequestConversations, json!({}));
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
+        call.reply()
+    }
+
+    async fn request_conversation(
+        &self, call: &mut dyn Call_RequestConversation,
+        device_id: String, thread_id: i64,
+    ) -> varlink::Result<()> {
+        let packet = ProtocolPacket::new(PacketType::SmsRequestConversation, json!({ "threadID": thread_id }));
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
+        call.reply()
+    }
+
+    async fn send_sms(
+        &self, call: &mut dyn Call_SendSms,
+        device_id: String, phone_number: String, message: String,
+    ) -> varlink::Result<()> {
+        let packet = ProtocolPacket::new(
+            PacketType::SmsRequest,
+            json!({
+                "sendSms": true,
+                "addresses": [{ "address": phone_number }],
+                "messageBody": message,
+                "version": 2
+            }),
+        );
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
+        call.reply()
+    }
+
+    async fn get_cached_sms(&self, call: &mut dyn Call_GetCachedSms, device_id: String) -> varlink::Result<()> {
+        if let Some(json) = self.sms_cache.lock().await.as_ref() {
+            return call.reply(json.clone());
+        }
+        call.reply(crate::dbus_interface::load_sms_cache(&device_id).await.unwrap_or_default())
+    }
+
+    async fn request_contacts(&self, call: &mut dyn Call_RequestContacts, device_id: String) -> varlink::Result<()> {
+        let packet = ProtocolPacket::new(PacketType::ContactsRequestAllUidsTimestamps, json!({}));
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
+        call.reply()
+    }
+
+    async fn get_cached_contacts(&self, call: &mut dyn Call_GetCachedContacts, device_id: String) -> varlink::Result<()> {
+        let json = match crate::dbus_interface::load_contacts_cache(&device_id).await {
+            Some(contacts) => serde_json::to_string(&contacts).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        };
+        call.reply(json)
+    }
+
     // DORMANT: varlink_generator's async codegen doesn't support streaming
     // replies yet (AsyncCall::set_continues is a no-op, reply_struct just
     // overwrites one in-memory Option — see lib.rs of varlink_generator).
@@ -195,9 +252,10 @@ impl VarlinkInterface for KdeConnectVarlinkService {
 pub async fn run_varlink_server(
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     devices: Arc<tokio::sync::Mutex<std::collections::HashMap<String, DbusDevice>>>,
+    sms_cache: Arc<tokio::sync::Mutex<Option<String>>>,
     broadcast_tx: broadcast::Sender<VarlinkEvent>,
 ) -> Result<()> {
-    let service = Arc::new(KdeConnectVarlinkService::new(event_sender, devices, broadcast_tx));
+    let service = Arc::new(KdeConnectVarlinkService::new(event_sender, devices, sms_cache, broadcast_tx));
     let handler = Arc::new(iface::new(service));
 
     listen_async(

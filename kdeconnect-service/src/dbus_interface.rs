@@ -66,7 +66,7 @@ async fn save_contacts_cache(device_id: &str, contacts: &HashMap<String, String>
     }
 }
 
-async fn load_contacts_cache(device_id: &str) -> Option<HashMap<String, String>> {
+pub(crate) async fn load_contacts_cache(device_id: &str) -> Option<HashMap<String, String>> {
     let path = device_cache_dir(device_id).join("contacts_cache.json");
     match tokio::fs::read_to_string(&path).await {
         Ok(json) => match serde_json::from_str(&json) {
@@ -104,7 +104,7 @@ async fn save_sms_cache(device_id: &str, messages_json: &str) {
     }
 }
 
-async fn load_sms_cache(device_id: &str) -> Option<String> {
+pub(crate) async fn load_sms_cache(device_id: &str) -> Option<String> {
     let path = device_cache_dir(device_id).join("sms_cache.json");
     match tokio::fs::read_to_string(&path).await {
         Ok(json) if !json.is_empty() => {
@@ -497,6 +497,7 @@ pub struct KdeConnectService {
     connection: Connection,
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     devices: Arc<Mutex<HashMap<String, DbusDevice>>>,
+    sms_cache: Arc<Mutex<Option<String>>>,
 }
 
 impl KdeConnectService {
@@ -515,9 +516,10 @@ impl KdeConnectService {
     ) {
         let event_sender = self.event_sender.clone();
         let devices = self.devices.clone();
+        let sms_cache = self.sms_cache.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                crate::varlink_server::run_varlink_server(event_sender, devices, broadcast_tx)
+                crate::varlink_server::run_varlink_server(event_sender, devices, sms_cache, broadcast_tx)
                     .await
             {
                 warn!("Varlink server exited: {:?}", e);
@@ -640,6 +642,7 @@ impl KdeConnectService {
         let devices_clone = devices.clone();
         let event_sender_clone = event_sender.clone();
         let broadcast_tx_clone = broadcast_tx.clone();
+        let sms_cache_for_service = sms_cache.clone();
 
         tokio::spawn(async move {
             debug!("Event handler started");
@@ -676,6 +679,7 @@ impl KdeConnectService {
             connection,
             event_sender,
             devices,
+            sms_cache: sms_cache_for_service,
         })
     }
 

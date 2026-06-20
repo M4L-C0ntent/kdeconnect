@@ -10,6 +10,30 @@ lazy_static::lazy_static! {
     static ref SMS_CLIENT: Arc<Mutex<Option<Arc<KdeConnectClient>>>> = Arc::new(Mutex::new(None));
 }
 
+/// Tries a varlink call first, falling back to `None` if the socket isn't
+/// reachable (caller then uses the D-Bus client). This window is a separate
+/// process from the panel applet, so it keeps its own lightweight attempt
+/// rather than sharing `backend.rs`'s cached address — these are infrequent,
+/// user-triggered actions, not a hot polling path, so skipping the cache is
+/// the simpler tradeoff.
+async fn via_varlink<F, Fut, T>(f: F) -> Option<T>
+where
+    F: FnOnce(kdeconnect_varlink::iface::VarlinkClient) -> Fut,
+    Fut: std::future::Future<Output = Result<T, kdeconnect_varlink::Error>>,
+{
+    let addr = kdeconnect_varlink::socket_address();
+    match varlink::AsyncConnection::with_address(&addr).await {
+        Ok(conn) => match f(kdeconnect_varlink::iface::VarlinkClient::new(conn)).await {
+            Ok(v) => Some(v),
+            Err(e) => {
+                warn!("varlink call failed, falling back to D-Bus: {:?}", e);
+                None
+            }
+        },
+        Err(_) => None,
+    }
+}
+
 pub async fn initialize() -> Result<()> {
     debug!("SMS D-Bus initialize()");
     let client = KdeConnectClient::new().await?;
@@ -36,6 +60,15 @@ pub async fn get_client() -> Option<Arc<KdeConnectClient>> {
 
 pub async fn fetch_conversations(device_id: &str) {
     debug!("fetch_conversations device={}", device_id);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+    let id = device_id.to_string();
+    if via_varlink(|c| async move { c.request_conversations(id).call().await })
+        .await
+        .is_some()
+    {
+        debug!("request_conversations sent via varlink");
+        return;
+    }
     let Some(client) = get_client().await else {
         return;
     };
@@ -47,10 +80,19 @@ pub async fn fetch_conversations(device_id: &str) {
 
 pub async fn request_conversation_messages(device_id: &str, thread_id: &str) {
     debug!("request_conversation device={} thread={}", device_id, thread_id);
+    let tid = thread_id.parse::<i64>().unwrap_or(0);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+    let id = device_id.to_string();
+    if via_varlink(|c| async move { c.request_conversation(id, tid).call().await })
+        .await
+        .is_some()
+    {
+        debug!("request_conversation sent via varlink");
+        return;
+    }
     let Some(client) = get_client().await else {
         return;
     };
-    let tid = thread_id.parse::<i64>().unwrap_or(0);
     match client.request_conversation(device_id, tid).await {
         Ok(_) => debug!("request_conversation sent"),
         Err(e) => error!("request_conversation failed: {:?}", e),
@@ -59,6 +101,17 @@ pub async fn request_conversation_messages(device_id: &str, thread_id: &str) {
 
 pub async fn send_sms(device_id: &str, phone_number: &str, message: &str) {
     debug!("send_sms to={} device={}", phone_number, device_id);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+    let id = device_id.to_string();
+    let phone = phone_number.to_string();
+    let msg = message.to_string();
+    if via_varlink(|c| async move { c.send_sms(id, phone, msg).call().await })
+        .await
+        .is_some()
+    {
+        debug!("send_sms sent via varlink");
+        return;
+    }
     let Some(client) = get_client().await else {
         return;
     };
@@ -70,6 +123,15 @@ pub async fn send_sms(device_id: &str, phone_number: &str, message: &str) {
 
 pub async fn fetch_contacts(device_id: &str) {
     debug!("fetch_contacts device={}", device_id);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+    let id = device_id.to_string();
+    if via_varlink(|c| async move { c.request_contacts(id).call().await })
+        .await
+        .is_some()
+    {
+        debug!("request_contacts sent via varlink");
+        return;
+    }
     let Some(client) = get_client().await else {
         return;
     };
@@ -81,6 +143,14 @@ pub async fn fetch_contacts(device_id: &str) {
 
 pub async fn get_cached_contacts(device_id: &str) -> std::collections::HashMap<String, String> {
     debug!("get_cached_contacts device={}", device_id);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+    let id = device_id.to_string();
+    if let Some(reply) =
+        via_varlink(|c| async move { c.get_cached_contacts(id).call().await }).await
+    {
+        return serde_json::from_str(&reply.json).unwrap_or_default();
+    }
+
     let Some(client) = get_client().await else {
         return std::collections::HashMap::new();
     };
@@ -101,6 +171,12 @@ pub async fn get_cached_contacts(device_id: &str) -> std::collections::HashMap<S
 
 pub async fn get_cached_sms(device_id: &str) -> Option<String> {
     debug!("get_cached_sms device={}", device_id);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+    let id = device_id.to_string();
+    if let Some(reply) = via_varlink(|c| async move { c.get_cached_sms(id).call().await }).await {
+        return if reply.json.is_empty() { None } else { Some(reply.json) };
+    }
+
     let Some(client) = get_client().await else {
         return None;
     };
