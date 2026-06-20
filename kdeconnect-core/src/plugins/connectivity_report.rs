@@ -1,6 +1,5 @@
 use crate::device::DeviceState;
 use crate::event::ConnectionEvent;
-use crate::plugin_interface::Plugin;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -63,11 +62,6 @@ impl Display for ConnectivityReportNetworkType {
     }
 }
 
-impl Plugin for ConnectivityReport {
-    fn id(&self) -> &'static str {
-        "kdeconnect.connectivity_report"
-    }
-}
 impl ConnectivityReport {
     pub async fn received_packet(&self, event: mpsc::UnboundedSender<ConnectionEvent>) {
         self.signal_strengths.values().for_each(|v| {

@@ -27,7 +27,7 @@ where
     Ok(PacketType::from(s))
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum PacketType {
     Battery,
     BatteryRequest,
@@ -76,124 +76,85 @@ pub enum PacketType {
     Unknown(String),
 }
 
+/// Canonical wire string for each known packet type. Single source of truth
+/// for both parsing (`From<String>`) and serializing (`Display`) — previously
+/// these were two separately hand-maintained 40-arm matches that could (and
+/// did) drift out of sync with each other.
+const PACKET_TYPES: &[(&str, PacketType)] = &[
+    ("kdeconnect.battery", PacketType::Battery),
+    ("kdeconnect.battery.request", PacketType::BatteryRequest),
+    ("kdeconnect.clipboard", PacketType::Clipboard),
+    ("kdeconnect.clipboard.connect", PacketType::ClipboardConnect),
+    ("kdeconnect.connectivity_report", PacketType::ConnectivityReport),
+    ("kdeconnect.connectivity_report.request", PacketType::ConnectivityReportRequest),
+    ("kdeconnect.contacts.request_all_uids_timestamps", PacketType::ContactsRequestAllUidsTimestamps),
+    ("kdeconnect.contacts.request_vcards_by_uid", PacketType::ContactsRequestVcardsByUid),
+    ("kdeconnect.contacts.response_uids_timestamps", PacketType::ContactsResponseUidsTimestamps),
+    ("kdeconnect.contacts.response_vcards", PacketType::ContactsResponseVcards),
+    ("kdeconnect.findmyphone.request", PacketType::FindMyPhoneRequest),
+    ("kdeconnect.lock", PacketType::Lock),
+    ("kdeconnect.lock.request", PacketType::LockRequest),
+    ("kdeconnect.mousepad.echo", PacketType::MousePadEcho),
+    ("kdeconnect.mousepad.keyboardstate", PacketType::MousePadKeyboardState),
+    ("kdeconnect.mousepad.request", PacketType::MousePadRequest),
+    ("kdeconnect.mpris", PacketType::Mpris),
+    ("kdeconnect.mpris.request", PacketType::MprisRequest),
+    ("kdeconnect.notification", PacketType::Notification),
+    ("kdeconnect.notification.action", PacketType::NotificationAction),
+    ("kdeconnect.notification.reply", PacketType::NotificationReply),
+    ("kdeconnect.notification.request", PacketType::NotificationRequest),
+    ("kdeconnect.identity", PacketType::Identity),
+    ("kdeconnect.pair", PacketType::Pair),
+    ("kdeconnect.ping", PacketType::Ping),
+    ("kdeconnect.presenter", PacketType::Presenter),
+    ("kdeconnect.runcommand", PacketType::RunCommand),
+    ("kdeconnect.runcommand.request", PacketType::RunCommandRequest),
+    ("kdeconnect.sftp", PacketType::Sftp),
+    ("kdeconnect.sftp.request", PacketType::SftpRequest),
+    ("kdeconnect.share.request", PacketType::ShareRequest),
+    ("kdeconnect.share.request.update", PacketType::ShareRequestUpdate),
+    ("kdeconnect.sms.attachment_file", PacketType::SmsAttachmentFile),
+    ("kdeconnect.sms.messages", PacketType::SmsMessages),
+    ("kdeconnect.sms.request", PacketType::SmsRequest),
+    ("kdeconnect.sms.request_attachment", PacketType::SmsRequestAttachment),
+    ("kdeconnect.sms.request_conversation", PacketType::SmsRequestConversation),
+    ("kdeconnect.sms.request_conversations", PacketType::SmsRequestConversations),
+    ("kdeconnect.systemvolume", PacketType::SystemVolume),
+    ("kdeconnect.systemvolume.request", PacketType::SystemVolumeRequest),
+    ("kdeconnect.telephony", PacketType::Telephony),
+    ("kdeconnect.telephony.request_mute", PacketType::TelephonyRequestMute),
+];
+
+/// Legacy/alternate wire strings accepted on parse but never emitted.
+const PACKET_TYPE_ALIASES: &[(&str, PacketType)] = &[(
+    "kdeconnect.contacts.response_all_uids_timestamps",
+    PacketType::ContactsResponseUidsTimestamps,
+)];
+
 impl From<String> for PacketType {
     fn from(value: String) -> Self {
-        match value.as_str() {
-            "kdeconnect.battery" => PacketType::Battery,
-            "kdeconnect.battery.request" => PacketType::BatteryRequest,
-            "kdeconnect.clipboard" => PacketType::Clipboard,
-            "kdeconnect.clipboard.connect" => PacketType::ClipboardConnect,
-            "kdeconnect.connectivity_report" => PacketType::ConnectivityReport,
-            "kdeconnect.connectivity_report.request" => PacketType::ConnectivityReportRequest,
-            "kdeconnect.contacts.request_all_uids_timestamps" => {
-                PacketType::ContactsRequestAllUidsTimestamps
-            }
-            "kdeconnect.contacts.response_uids_timestamps"
-            | "kdeconnect.contacts.response_all_uids_timestamps" => {
-                PacketType::ContactsResponseUidsTimestamps
-            }
-            "kdeconnect.contacts.response_vcards" => PacketType::ContactsResponseVcards,
-            "kdeconnect.findmyphone.request" => PacketType::FindMyPhoneRequest,
-            "kdeconnect.lock" => PacketType::Lock,
-            "kdeconnect.lock.request" => PacketType::LockRequest,
-            "kdeconnect.mousepad.echo" => PacketType::MousePadEcho,
-            "kdeconnect.mousepad.keyboardstate" => PacketType::MousePadKeyboardState,
-            "kdeconnect.mousepad.request" => PacketType::MousePadRequest,
-            "kdeconnect.mpris" => PacketType::Mpris,
-            "kdeconnect.mpris.request" => PacketType::MprisRequest,
-            "kdeconnect.notification" => PacketType::Notification,
-            "kdeconnect.notification.action" => PacketType::NotificationAction,
-            "kdeconnect.notification.reply" => PacketType::NotificationReply,
-            "kdeconnect.notification.request" => PacketType::NotificationRequest,
-            "kdeconnect.identity" => PacketType::Identity,
-            "kdeconnect.pair" => PacketType::Pair,
-            "kdeconnect.ping" => PacketType::Ping,
-            "kdeconnect.presenter" => PacketType::Presenter,
-            "kdeconnect.runcommand" => PacketType::RunCommand,
-            "kdeconnect.runcommand.request" => PacketType::RunCommandRequest,
-            "kdeconnect.sftp" => PacketType::Sftp,
-            "kdeconnect.sftp.request" => PacketType::SftpRequest,
-            "kdeconnect.share.request" => PacketType::ShareRequest,
-            "kdeconnect.share.request.update" => PacketType::ShareRequestUpdate,
-            "kdeconnect.sms.attachment_file" => PacketType::SmsAttachmentFile,
-            "kdeconnect.sms.messages" => PacketType::SmsMessages,
-            "kdeconnect.sms.request" => PacketType::SmsRequest,
-            "kdeconnect.sms.request_attachment" => PacketType::SmsRequestAttachment,
-            "kdeconnect.sms.request_conversation" => PacketType::SmsRequestConversation,
-            "kdeconnect.sms.request_conversations" => PacketType::SmsRequestConversations,
-            "kdeconnect.systemvolume" => PacketType::SystemVolume,
-            "kdeconnect.systemvolume.request" => PacketType::SystemVolumeRequest,
-            "kdeconnect.telephony" => PacketType::Telephony,
-            "kdeconnect.telephony.request_mute" => PacketType::TelephonyRequestMute,
-            other => {
-                tracing::debug!("Unknown packet type received: {}", other);
-                PacketType::Unknown(other.to_string())
-            }
+        if let Some(entry) = PACKET_TYPES.iter().find(|entry| entry.0 == value.as_str()) {
+            return entry.1.clone();
         }
+        if let Some(entry) = PACKET_TYPE_ALIASES.iter().find(|entry| entry.0 == value.as_str()) {
+            return entry.1.clone();
+        }
+        tracing::debug!("Unknown packet type received: {}", value);
+        PacketType::Unknown(value)
     }
 }
 
 impl Display for PacketType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            PacketType::Battery => write!(f, "kdeconnect.battery"),
-            PacketType::BatteryRequest => write!(f, "kdeconnect.battery.request"),
-            PacketType::Clipboard => write!(f, "kdeconnect.clipboard"),
-            PacketType::ClipboardConnect => write!(f, "kdeconnect.clipboard.connect"),
-            PacketType::ConnectivityReport => write!(f, "kdeconnect.connectivity_report"),
-            PacketType::ConnectivityReportRequest => {
-                write!(f, "kdeconnect.connectivity_report.request")
-            }
-            PacketType::ContactsRequestAllUidsTimestamps => {
-                write!(f, "kdeconnect.contacts.request_all_uids_timestamps")
-            }
-            PacketType::ContactsRequestVcardsByUid => {
-                write!(f, "kdeconnect.contacts.request_vcards_by_uid")
-            }
-            PacketType::ContactsResponseUidsTimestamps => {
-                write!(f, "kdeconnect.contacts.response_uids_timestamps")
-            }
-            PacketType::ContactsResponseVcards => {
-                write!(f, "kdeconnect.contacts.response_vcards")
-            }
-            PacketType::FindMyPhoneRequest => write!(f, "kdeconnect.findmyphone.request"),
-            PacketType::Lock => write!(f, "kdeconnect.lock"),
-            PacketType::LockRequest => write!(f, "kdeconnect.lock.request"),
-            PacketType::MousePadEcho => write!(f, "kdeconnect.mousepad.echo"),
-            PacketType::MousePadKeyboardState => write!(f, "kdeconnect.mousepad.keyboard_state"),
-            PacketType::MousePadRequest => write!(f, "kdeconnect.mousepad.request"),
-            PacketType::Mpris => write!(f, "kdeconnect.mpris"),
-            PacketType::MprisRequest => write!(f, "kdeconnect.mpris.request"),
-            PacketType::Notification => write!(f, "kdeconnect.notification"),
-            PacketType::NotificationAction => write!(f, "kdeconnect.notification.action"),
-            PacketType::NotificationReply => write!(f, "kdeconnect.notification.reply"),
-            PacketType::NotificationRequest => write!(f, "kdeconnect.notification.request"),
-            PacketType::Identity => write!(f, "kdeconnect.identity"),
-            PacketType::Pair => write!(f, "kdeconnect.pair"),
-            PacketType::Ping => write!(f, "kdeconnect.ping"),
-            PacketType::Presenter => write!(f, "kdeconnect.presenter"),
-            PacketType::RunCommand => write!(f, "kdeconnect.runcommand"),
-            PacketType::RunCommandRequest => write!(f, "kdeconnect.runcommand.request"),
-            PacketType::Sftp => write!(f, "kdeconnect.sftp"),
-            PacketType::SftpRequest => write!(f, "kdeconnect.sftp.request"),
-            PacketType::ShareRequest => write!(f, "kdeconnect.share.request"),
-            PacketType::ShareRequestUpdate => write!(f, "kdeconnect.share.request.update"),
-            PacketType::SmsAttachmentFile => write!(f, "kdeconnect.sms.attachment_file"),
-            PacketType::SmsMessages => write!(f, "kdeconnect.sms.messages"),
-            PacketType::SmsRequest => write!(f, "kdeconnect.sms.request"),
-            PacketType::SmsRequestAttachment => write!(f, "kdeconnect.sms.request_attachment"),
-            PacketType::SmsRequestConversation => {
-                write!(f, "kdeconnect.sms.request_conversation")
-            }
-            PacketType::SmsRequestConversations => {
-                write!(f, "kdeconnect.sms.request_conversations")
-            }
-            PacketType::SystemVolume => write!(f, "kdeconnect.systemvolume"),
-            PacketType::SystemVolumeRequest => write!(f, "kdeconnect.systemvolume.request"),
-            PacketType::Telephony => write!(f, "kdeconnect.telephony"),
-            PacketType::TelephonyRequestMute => write!(f, "kdeconnect.telephony.request_mute"),
-            PacketType::Unknown(s) => write!(f, "{}", s),
+        if let PacketType::Unknown(s) = self {
+            return write!(f, "{}", s);
         }
+        let s = PACKET_TYPES
+            .iter()
+            .find(|entry| entry.1 == *self)
+            .map(|entry| entry.0)
+            .unwrap_or("");
+        write!(f, "{}", s)
     }
 }
 
@@ -265,23 +226,14 @@ impl ProtocolPacket {
         payload_transfer_info: Option<PacketPayloadTransferInfo>,
     ) -> Self {
         Self {
-            id: Some(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis(),
-            ),
-            packet_type: t,
-            body,
             payload_size: Some(payload_size),
             payload_transfer_info,
+            ..Self::new(t, body)
         }
     }
 
     pub fn from_raw(raw: &[u8]) -> anyhow::Result<Self> {
-        let pkt: ProtocolPacket =
-            serde_json::from_slice(raw).expect("Failed to parse ProtocolPacket from raw data");
-        Ok(pkt)
+        Ok(serde_json::from_slice(raw)?)
     }
 
     pub fn as_raw(&self) -> anyhow::Result<Vec<u8>> {
@@ -310,23 +262,14 @@ pub struct Pair {
 }
 
 impl Pair {
-    pub fn new(response: bool) -> Self {
-        if response {
-            let timestamp = Some(
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            );
-            return Pair {
-                pair: true,
-                timestamp,
-            };
-        }
-        Pair {
-            pair: response,
-            timestamp: None,
-        }
+    pub fn new(pair: bool) -> Self {
+        let timestamp = pair.then(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        });
+        Pair { pair, timestamp }
     }
 }
 

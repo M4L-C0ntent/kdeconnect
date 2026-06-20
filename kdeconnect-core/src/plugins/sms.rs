@@ -1,9 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tracing::info;
 
 use crate::event::ConnectionEvent;
-use crate::plugin_interface::Plugin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SmsMessages {
@@ -45,18 +43,7 @@ pub struct SmsAttachment {
 
 impl SmsMessages {
     pub async fn received_packet(&self, tx: mpsc::UnboundedSender<ConnectionEvent>) {
-        info!(
-            "Received SMS messages packet with {} messages",
-            self.messages.len()
-        );
-
         let event = ConnectionEvent::SmsMessages(self.clone());
         let _ = tx.send(event);
-    }
-}
-
-impl Plugin for SmsMessages {
-    fn id(&self) -> &'static str {
-        "kdeconnect.sms.messages"
     }
 }

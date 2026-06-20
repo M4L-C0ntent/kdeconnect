@@ -26,10 +26,6 @@ use crate::{
     transport::prepare_listener_for_payload,
 };
 
-pub trait Plugin: Sync + Send {
-    fn id(&self) -> &'static str;
-}
-
 /// Maps a PacketType to the logical plugin ID used in settings.
 /// Returns None for core packets (Identity, Pair) that are never gated.
 fn packet_plugin_id(pt: &PacketType) -> Option<&'static str> {
@@ -77,7 +73,6 @@ fn packet_plugin_id(pt: &PacketType) -> Option<&'static str> {
 
 #[derive(Clone)]
 pub struct PluginRegistry {
-    plugins: Arc<RwLock<Vec<Arc<dyn Plugin>>>>,
     /// device_id.0 → set of disabled plugin IDs
     disabled: Arc<RwLock<HashMap<String, HashSet<String>>>>,
 }
@@ -85,15 +80,8 @@ pub struct PluginRegistry {
 impl PluginRegistry {
     pub fn new() -> Self {
         Self {
-            plugins: Arc::new(RwLock::new(Vec::new())),
             disabled: Arc::new(RwLock::new(HashMap::new())),
         }
-    }
-
-    pub async fn register(&self, plugin: Arc<dyn Plugin>) {
-        let mut plugins = self.plugins.write().await;
-        info!("Registering plugin: {}", plugin.id());
-        plugins.push(plugin);
     }
 
     /// Replace the disabled set for a device (called on connect and on toggle).
@@ -137,9 +125,8 @@ impl PluginRegistry {
 
         let body = packet.body.clone();
         info!("[dispatch] packet type: {:?}", packet.packet_type);
-        let core_tx = core_tx.clone();
-        let connection_tx = tx.clone();
-        let mpris_connection_tx = mpris_tx.clone();
+        let connection_tx = tx;
+        let mpris_connection_tx = mpris_tx;
         let payload_info = packet.payload_transfer_info;
 
         match packet.packet_type {
@@ -283,18 +270,14 @@ impl PluginRegistry {
                 if let Ok(run_command) =
                     serde_json::from_value::<plugins::run_command::RunCommand>(body)
                 {
-                    run_command
-                        .received_packet(&device, connection_tx, core_tx)
-                        .await;
+                    run_command.received_packet(&device, core_tx).await;
                 }
             }
             PacketType::RunCommandRequest => {
                 if let Ok(run_command_request) =
                     serde_json::from_value::<plugins::run_command::RunCommandRequest>(body)
                 {
-                    run_command_request
-                        .received_packet(&device, connection_tx, core_tx)
-                        .await;
+                    run_command_request.received_packet(&device, core_tx).await;
                 }
             }
             PacketType::ShareRequest => {
@@ -313,7 +296,7 @@ impl PluginRegistry {
             }
             PacketType::SystemVolumeRequest => {
                 if let Ok(req) = serde_json::from_value::<SystemVolumeRequest>(body) {
-                    req.handle(&device, core_tx).await;
+                    req.handle(&device).await;
                 }
             }
             PacketType::Telephony => {
@@ -439,7 +422,7 @@ impl PluginRegistry {
         core_tx: mpsc::UnboundedSender<CoreEvent>,
     ) {
         let body = packet.body.clone();
-        let core_event = core_tx.clone();
+        let core_event = core_tx;
 
         match packet.packet_type {
             PacketType::Ping => {
@@ -459,11 +442,6 @@ impl PluginRegistry {
                 );
             }
         }
-    }
-
-    pub async fn list_plugins(&self) -> Vec<String> {
-        let plugins = self.plugins.read().await;
-        plugins.iter().map(|p| p.id().to_string()).collect()
     }
 }
 

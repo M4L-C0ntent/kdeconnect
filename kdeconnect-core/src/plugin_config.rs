@@ -25,10 +25,7 @@ pub async fn load_disabled_plugins(device_id: &str) -> HashSet<String> {
             // No config yet — seed with plugins disabled by default.
             // Remote Input and Presentation Mode require compositor RDP support
             // which COSMIC does not yet provide.
-            let mut defaults = HashSet::new();
-            defaults.insert("mousepad".to_string());
-            defaults.insert("presenter".to_string());
-            defaults
+            HashSet::from(["mousepad".to_string(), "presenter".to_string()])
         }
     }
 }

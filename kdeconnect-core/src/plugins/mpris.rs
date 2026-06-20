@@ -8,7 +8,6 @@ use zbus::interface;
 
 use crate::{
     device::{Device, DeviceManager},
-    plugin_interface::Plugin,
     protocol::{DeviceFile, DevicePayload, PacketPayloadTransferInfo, PacketType, ProtocolPacket},
 };
 
@@ -183,12 +182,6 @@ pub enum MprisAction {
     Previous,
 }
 
-impl Plugin for Mpris {
-    fn id(&self) -> &'static str {
-        "kdeconnect.mpris"
-    }
-}
-
 impl Mpris {
     pub async fn send_art(
         &self,
@@ -231,12 +224,6 @@ pub fn get_all_mpris_player_names() -> Vec<String> {
     }
 }
 
-impl Plugin for MprisRequest {
-    fn id(&self) -> &'static str {
-        "kdeconnect.mpris.request"
-    }
-}
-
 impl MprisRequest {
     pub async fn received_packet(
         &self,
@@ -265,47 +252,45 @@ impl MprisRequest {
         }
 
         if let Some(player_name) = &self.player {
-            {
-                if let Ok(player) = get_mpris_players(Some(player_name)) {
-                    if let Some(seek_us) = self.seek {
-                        let _ = player.seek(seek_us);
-                    }
+            if let Ok(player) = get_mpris_players(Some(player_name)) {
+                if let Some(seek_us) = self.seek {
+                    let _ = player.seek(seek_us);
+                }
 
-                    if let Some(vol) = self.set_volume {
-                        let _ = player.set_volume(vol as f64 / 100.0);
-                    }
+                if let Some(vol) = self.set_volume {
+                    let _ = player.set_volume(vol as f64 / 100.0);
+                }
 
-                    if let Some(loop_status) = self.set_loop_status {
-                        let status = match loop_status {
-                            MprisLoopStatus::None => mpris::LoopStatus::None,
-                            MprisLoopStatus::Track => mpris::LoopStatus::Track,
-                            MprisLoopStatus::Playlist => mpris::LoopStatus::Playlist,
-                        };
-                        let _ = player.set_loop_status(status);
-                    }
+                if let Some(loop_status) = self.set_loop_status {
+                    let status = match loop_status {
+                        MprisLoopStatus::None => mpris::LoopStatus::None,
+                        MprisLoopStatus::Track => mpris::LoopStatus::Track,
+                        MprisLoopStatus::Playlist => mpris::LoopStatus::Playlist,
+                    };
+                    let _ = player.set_loop_status(status);
+                }
 
-                    if let Some(position_ms) = self.set_position
-                        && let Ok(metadata) = player.get_metadata()
-                        && let Some(track_id) = metadata.track_id()
-                    {
-                        let duration = std::time::Duration::from_millis(position_ms as u64);
-                        let _ = player.set_position(track_id, &duration);
-                    }
+                if let Some(position_ms) = self.set_position
+                    && let Ok(metadata) = player.get_metadata()
+                    && let Some(track_id) = metadata.track_id()
+                {
+                    let duration = std::time::Duration::from_millis(position_ms as u64);
+                    let _ = player.set_position(track_id, &duration);
+                }
 
-                    if let Some(shuffle) = self.set_shuffle {
-                        let _ = player.set_shuffle(shuffle);
-                    }
+                if let Some(shuffle) = self.set_shuffle {
+                    let _ = player.set_shuffle(shuffle);
+                }
 
-                    if let Some(command) = self.action {
-                        let _ = match command {
-                            MprisAction::Play => player.play(),
-                            MprisAction::Pause => player.pause(),
-                            MprisAction::PlayPause => player.play_pause(),
-                            MprisAction::Stop => player.stop(),
-                            MprisAction::Next => player.next(),
-                            MprisAction::Previous => player.previous(),
-                        };
-                    }
+                if let Some(command) = self.action {
+                    let _ = match command {
+                        MprisAction::Play => player.play(),
+                        MprisAction::Pause => player.pause(),
+                        MprisAction::PlayPause => player.play_pause(),
+                        MprisAction::Stop => player.stop(),
+                        MprisAction::Next => player.next(),
+                        MprisAction::Previous => player.previous(),
+                    };
                 }
             }
 
@@ -555,6 +540,14 @@ struct PhoneMprisPlayer {
     core_tx: mpsc::UnboundedSender<crate::event::CoreEvent>,
 }
 
+fn action_request(player: String, action: MprisAction) -> MprisRequest {
+    MprisRequest {
+        player: Some(player),
+        action: Some(action),
+        ..Default::default()
+    }
+}
+
 #[interface(name = "org.mpris.MediaPlayer2.Player")]
 impl PhoneMprisPlayer {
     async fn play(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
@@ -567,12 +560,7 @@ impl PhoneMprisPlayer {
         };
 
         state.is_playing = Some(!is_playing);
-
-        let request = MprisRequest {
-            player: Some(state.player.clone()),
-            action: Some(action),
-            ..Default::default()
-        };
+        let request = action_request(state.player.clone(), action);
         drop(state);
 
         let _ = self.playback_status_changed(&emitter).await;
@@ -582,12 +570,7 @@ impl PhoneMprisPlayer {
     async fn pause(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
         let mut state = self.player_state.write().await;
         state.is_playing = Some(false);
-
-        let request = MprisRequest {
-            player: Some(state.player.clone()),
-            action: Some(MprisAction::Pause),
-            ..Default::default()
-        };
+        let request = action_request(state.player.clone(), MprisAction::Pause);
         drop(state);
 
         let _ = self.playback_status_changed(&emitter).await;
@@ -598,12 +581,7 @@ impl PhoneMprisPlayer {
         let mut state = self.player_state.write().await;
         let is_playing = state.is_playing.unwrap_or(false);
         state.is_playing = Some(!is_playing);
-
-        let request = MprisRequest {
-            player: Some(state.player.clone()),
-            action: Some(MprisAction::PlayPause),
-            ..Default::default()
-        };
+        let request = action_request(state.player.clone(), MprisAction::PlayPause);
         drop(state);
 
         let _ = self.playback_status_changed(&emitter).await;
@@ -612,34 +590,22 @@ impl PhoneMprisPlayer {
 
     async fn next(&self) {
         let state = self.player_state.read().await;
-        let request = MprisRequest {
-            player: Some(state.player.clone()),
-            action: Some(MprisAction::Next),
-            ..Default::default()
-        };
-
+        let request = action_request(state.player.clone(), MprisAction::Next);
+        drop(state);
         self.send_request(request).await;
     }
 
     async fn previous(&self) {
         let state = self.player_state.read().await;
-        let request = MprisRequest {
-            player: Some(state.player.clone()),
-            action: Some(MprisAction::Previous),
-            ..Default::default()
-        };
-
+        let request = action_request(state.player.clone(), MprisAction::Previous);
+        drop(state);
         self.send_request(request).await;
     }
 
     async fn stop(&self) {
         let state = self.player_state.read().await;
-        let request = MprisRequest {
-            player: Some(state.player.clone()),
-            action: Some(MprisAction::Stop),
-            ..Default::default()
-        };
-
+        let request = action_request(state.player.clone(), MprisAction::Stop);
+        drop(state);
         self.send_request(request).await;
     }
 
@@ -737,20 +703,29 @@ impl PhoneMprisPlayer {
 
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
         let player_name = self.player_state.read().await.player.clone();
-        let info_request = MprisRequest {
-            player: Some(player_name),
-            request_now_playing: Some(true),
-            ..Default::default()
-        };
-        let info_packet = ProtocolPacket::new(
-            PacketType::MprisRequest,
-            serde_json::to_value(info_request).unwrap(),
-        );
-        let _ = self.core_tx.send(crate::event::CoreEvent::SendPacket {
-            device: self.device_id.clone(),
-            packet: info_packet,
-        });
+        send_now_playing_request(&self.core_tx, &self.device_id, player_name);
     }
+}
+
+/// Asks the phone to send fresh now-playing info for one of its players.
+fn send_now_playing_request(
+    core_tx: &mpsc::UnboundedSender<crate::event::CoreEvent>,
+    device_id: &crate::device::DeviceId,
+    player_name: String,
+) {
+    let request = MprisRequest {
+        player: Some(player_name),
+        request_now_playing: Some(true),
+        ..Default::default()
+    };
+    let packet = ProtocolPacket::new(
+        PacketType::MprisRequest,
+        serde_json::to_value(request).unwrap(),
+    );
+    let _ = core_tx.send(crate::event::CoreEvent::SendPacket {
+        device: device_id.clone(),
+        packet,
+    });
 }
 
 struct PhoneMprisRoot {
@@ -840,8 +815,8 @@ pub fn expose_phone_mpris(
                                     if let Some(player_conn) =
                                         active_players.get_mut(&player_key)
                                     {
-                                        let old_state =
-                                            player_conn.player_state.read().await.clone();
+                                        let old_is_playing =
+                                            player_conn.player_state.read().await.is_playing;
 
                                         {
                                             let mut state =
@@ -849,7 +824,7 @@ pub fn expose_phone_mpris(
                                             *state = player_info.clone();
                                         }
 
-                                        if old_state.is_playing != player_info.is_playing {
+                                        if old_is_playing != player_info.is_playing {
                                             let obj_server =
                                                 player_conn.connection.object_server();
                                             if let Ok(iface_ref) = obj_server
@@ -918,19 +893,7 @@ pub fn expose_phone_mpris(
                     // Ask each phone to refresh now-playing for all its players.
                     for player_conn in active_players.values() {
                         let player_name = player_conn.player_state.read().await.player.clone();
-                        let info_request = MprisRequest {
-                            player: Some(player_name),
-                            request_now_playing: Some(true),
-                            ..Default::default()
-                        };
-                        let packet = ProtocolPacket::new(
-                            PacketType::MprisRequest,
-                            serde_json::to_value(info_request).unwrap(),
-                        );
-                        let _ = core_tx.send(crate::event::CoreEvent::SendPacket {
-                            device: player_conn.device_id.clone(),
-                            packet,
-                        });
+                        send_now_playing_request(&core_tx, &player_conn.device_id, player_name);
                     }
                 }
             }

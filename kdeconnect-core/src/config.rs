@@ -67,7 +67,7 @@ pub struct Config {
 }
 
 impl Config {
-    pub async fn load(_out_caps: Vec<String>) -> anyhow::Result<Self> {
+    pub async fn load() -> anyhow::Result<Self> {
         let config_dir = dirs::config_dir()
             .expect("cannot find config dir")
             .join(CONFIG_DIR);
@@ -80,31 +80,27 @@ impl Config {
 
         let id_file = config_dir.join(DEVICE_ID_STORE);
 
-        let identity = match id_file.exists() {
-            true => {
-                let mut buffer = String::new();
-                let mut file = fs::File::open(&id_file).await.expect("cannot open file");
-
-                file.read_to_string(&mut buffer)
-                    .await
-                    .expect("fail reading file content");
-
-                let device_id = buffer.trim().to_string();
-                make_identity(device_id, Some(DEFAULT_LISTEN_PORT)).await
-            }
-            false => {
-                let device_id = uuid::Uuid::new_v4().to_string();
-
-                let mut file = fs::File::create(&id_file)
-                    .await
-                    .expect("cannot create file");
-                file.write_all(device_id.as_bytes())
-                    .await
-                    .expect("fail writing device id to file");
-
-                make_identity(device_id, Some(DEFAULT_LISTEN_PORT)).await
-            }
+        let device_id = if id_file.exists() {
+            let mut buffer = String::new();
+            fs::File::open(&id_file)
+                .await
+                .expect("cannot open file")
+                .read_to_string(&mut buffer)
+                .await
+                .expect("fail reading file content");
+            buffer.trim().to_string()
+        } else {
+            let device_id = uuid::Uuid::new_v4().to_string();
+            fs::File::create(&id_file)
+                .await
+                .expect("cannot create file")
+                .write_all(device_id.as_bytes())
+                .await
+                .expect("fail writing device id to file");
+            device_id
         };
+
+        let identity = make_identity(device_id, Some(DEFAULT_LISTEN_PORT)).await;
 
         debug!("CONFIG initialized.");
 

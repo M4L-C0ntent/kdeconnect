@@ -1,7 +1,6 @@
 pub mod battery;
 pub mod clipboard;
 pub mod connectivity_report;
-pub mod contacts;
 pub mod mousepad;
 pub mod mpris;
 pub mod notification;

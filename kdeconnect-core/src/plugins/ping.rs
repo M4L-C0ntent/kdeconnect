@@ -1,4 +1,4 @@
-use crate::{device::Device, event::CoreEvent, plugin_interface::Plugin, protocol::ProtocolPacket};
+use crate::{device::Device, event::CoreEvent, protocol::ProtocolPacket};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::debug;
@@ -8,11 +8,6 @@ pub struct Ping {
     pub message: Option<String>,
 }
 
-impl Plugin for Ping {
-    fn id(&self) -> &'static str {
-        "kdeconnect.ping"
-    }
-}
 impl Ping {
     pub async fn received_packet(
         &self,
@@ -20,7 +15,6 @@ impl Ping {
         core_event: mpsc::UnboundedSender<CoreEvent>,
     ) {
         let device_id = device.device_id.clone();
-        let event = core_event.clone();
 
         let packet = ProtocolPacket::new(
             crate::protocol::PacketType::Ping,
@@ -51,7 +45,7 @@ impl Ping {
                 });
 
             if reply {
-                let _ = event.send(CoreEvent::SendPacket {
+                let _ = core_event.send(CoreEvent::SendPacket {
                     device: device_id,
                     packet,
                 });
