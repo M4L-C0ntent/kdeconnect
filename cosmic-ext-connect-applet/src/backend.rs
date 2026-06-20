@@ -318,6 +318,13 @@ pub async fn push_local_commands(device_id: String) {
 
 /// Stream of service events. Reconnects automatically when the client is
 /// replaced (e.g. after session logout/login) or the stream ends.
+///
+/// NOTE: this stays D-Bus-only. varlink's `Subscribe()` looked like a fit,
+/// but this version of the varlink/varlink_generator crates doesn't actually
+/// support streaming replies in async mode (`set_continues` is a no-op,
+/// `reply_struct` only ever keeps the latest reply in memory) — a handler
+/// that loops and replies repeatedly never returns, so nothing is ever
+/// written to the socket and the client's first `recv()` blocks forever.
 pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent> {
     use tokio::sync::mpsc;
     use tokio::time::{Duration, sleep};

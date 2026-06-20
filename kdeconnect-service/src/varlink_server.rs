@@ -18,7 +18,12 @@ use varlink::{listen_async, ListenAsyncConfig};
 
 use crate::dbus_interface::DbusDevice;
 
-#[derive(Debug, Clone)]
+// DORMANT: built and broadcast on every device/battery/connectivity/clipboard/
+// pairing/run-command event in dbus_interface.rs, but nothing can actually
+// receive it — see the note on `subscribe()` below for why. Harmless to leave
+// wired (broadcast::Sender::send with no receivers is a cheap no-op), kept so
+// the only work left when the crate is fixed is re-enabling Subscribe() itself.
+#[derive(Debug, Clone, Default)]
 pub struct VarlinkEvent {
     pub event_type: String,
     pub device_id: String,
@@ -27,6 +32,7 @@ pub struct VarlinkEvent {
     pub connectivity_strength: Option<i64>,
     pub clipboard_content: Option<String>,
     pub commands_json: Option<String>,
+    pub message: Option<String>,
 }
 
 pub struct KdeConnectVarlinkService {
@@ -125,6 +131,15 @@ impl VarlinkInterface for KdeConnectVarlinkService {
         call.reply()
     }
 
+    // DORMANT: varlink_generator's async codegen doesn't support streaming
+    // replies yet (AsyncCall::set_continues is a no-op, reply_struct just
+    // overwrites one in-memory Option — see lib.rs of varlink_generator).
+    // A handler that loops and replies repeatedly never returns, so nothing
+    // is ever flushed to the socket and the client's first recv() blocks
+    // forever. Re-enable Subscribe() (and the matching client-side call in
+    // cosmic-ext-connect-applet's backend.rs) once that crate adds real
+    // async streaming support. Until then this method is unreachable —
+    // nothing should call it.
     async fn subscribe(&self, call: &mut dyn Call_Subscribe) -> varlink::Result<()> {
         let mut rx = self.broadcast_tx.subscribe();
         loop {
@@ -140,7 +155,7 @@ impl VarlinkInterface for KdeConnectVarlinkService {
                         ev.connectivity_strength,
                         ev.clipboard_content,
                         ev.commands_json,
-                        None,
+                        ev.message,
                     )?;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,

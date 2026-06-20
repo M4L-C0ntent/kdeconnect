@@ -68,10 +68,13 @@ async fn main() -> Result<()> {
         }
     }
 
-    let service = dbus_interface::KdeConnectService::new().await?;
+    // broadcast_tx feeds both the (currently dormant, see varlink_server.rs)
+    // Subscribe() event fan-out and KdeConnectService's own event handler.
+    let (broadcast_tx, _) = broadcast::channel(64);
+
+    let service = dbus_interface::KdeConnectService::new(broadcast_tx.clone()).await?;
     info!("D-Bus service started on io.github.hepp3n.kdeconnect");
 
-    let (broadcast_tx, _) = broadcast::channel(64);
     service.start_varlink(broadcast_tx);
 
     service.run().await?;
