@@ -45,6 +45,7 @@ pub enum SmsMessage {
 
 pub struct SmsWindow {
     core: Core,
+    pub accent_color: cosmic::iced::Color,
     pub device_id: String,
     #[allow(dead_code)]
     pub device_name: String,
@@ -77,6 +78,8 @@ impl Application for SmsWindow {
 
         let mut app = Self {
             core,
+            accent_color: crate::theme::try_load_cosmic_accent()
+                .unwrap_or(crate::theme::FALLBACK_TEAL),
             device_id: device_id.clone(),
             device_name: device_name.clone(),
             conversations: Vec::new(),
