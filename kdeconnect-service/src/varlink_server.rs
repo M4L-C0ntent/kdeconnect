@@ -6,6 +6,7 @@ use kdeconnect_varlink::iface::{
     self, BatteryState, Device, VarlinkInterface,
     Call_ListDevices, Call_PairDevice, Call_UnpairDevice, Call_SendPing,
     Call_SendFiles, Call_SendClipboard, Call_RunCommand,
+    Call_RingDevice, Call_BroadcastIdentity, Call_RequestRunCommands,
     Call_SetPluginEnabled, Call_GetPluginEnabled,
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
 };
@@ -97,6 +98,23 @@ impl VarlinkInterface for KdeConnectVarlinkService {
 
     async fn run_command(&self, call: &mut dyn Call_RunCommand, device_id: String, key: String) -> varlink::Result<()> {
         let packet = ProtocolPacket::new(PacketType::RunCommandRequest, json!({ "key": key }));
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
+        call.reply()
+    }
+
+    async fn ring_device(&self, call: &mut dyn Call_RingDevice, device_id: String) -> varlink::Result<()> {
+        let packet = ProtocolPacket::new(PacketType::FindMyPhoneRequest, json!({}));
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
+        call.reply()
+    }
+
+    async fn broadcast_identity(&self, call: &mut dyn Call_BroadcastIdentity) -> varlink::Result<()> {
+        let _ = self.event_sender.send(AppEvent::Broadcasting);
+        call.reply()
+    }
+
+    async fn request_run_commands(&self, call: &mut dyn Call_RequestRunCommands, device_id: String) -> varlink::Result<()> {
+        let packet = ProtocolPacket::new(PacketType::RunCommandRequest, json!({ "requestCommandList": true }));
         let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
         call.reply()
     }

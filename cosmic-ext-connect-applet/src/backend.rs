@@ -252,6 +252,13 @@ pub async fn reject_pairing(device_id: String) -> Result<()> {
 }
 
 pub async fn ring_device(device_id: String) -> Result<()> {
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.ring_device(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
     let g = CLIENT.lock().await;
     dbus_client!(g).ring_device(&device_id).await
 }
@@ -285,11 +292,22 @@ pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
 }
 
 pub async fn broadcast_identity() -> Result<()> {
+    if let Some(r) = via_varlink(|c| async move {
+        use kdeconnect_varlink::iface::VarlinkClientInterface;
+        c.broadcast_identity().call().await.map(|_| ())
+    }).await { return r; }
     let g = CLIENT.lock().await;
     dbus_client!(g).broadcast_identity().await
 }
 
 pub async fn request_run_commands(device_id: String) -> Result<()> {
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.request_run_commands(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
     let g = CLIENT.lock().await;
     dbus_client!(g).request_run_commands(&device_id).await
 }
