@@ -64,8 +64,7 @@ impl KdeConnectCore {
 
         let plugin_registry = Arc::new(PluginRegistry::new());
 
-        let outgoing_capabilities = plugin_registry.list_plugins().await;
-        let config = config::Config::load(outgoing_capabilities).await?;
+        let config = config::Config::load().await?;
 
         GLOBAL_CONFIG
             .set(config)
@@ -92,18 +91,6 @@ impl KdeConnectCore {
         tokio::spawn(async move {
             let _ = udp.listen().await;
         });
-
-        let run_command_plugin = plugins::run_command::RunCommandRequest::default();
-        plugin_registry.register(Arc::new(run_command_plugin)).await;
-        let share_request_plugin = plugins::share::ShareRequest::default();
-        plugin_registry
-            .register(Arc::new(share_request_plugin))
-            .await;
-        let sms_plugin = plugins::sms::SmsMessages {
-            messages: Vec::new(),
-            version: None,
-        };
-        plugin_registry.register(Arc::new(sms_plugin)).await;
 
         plugins::mpris::expose_phone_mpris(mpris_conn_rx, event_tx.clone());
 
@@ -226,8 +213,7 @@ impl KdeConnectCore {
                 }
 
                 let conn_event = ConnectionEvent::DevicePaired((device_id, device));
-                let _ = self.conn_tx.send(conn_event.clone());
-                let _ = self.mpris_conn_tx.send(conn_event);
+                self.broadcast_conn_event(conn_event);
             }
             CoreEvent::DevicePairCancelled(device_id) => {
                 info!("[core] device pair cancelled.");
@@ -235,13 +221,11 @@ impl KdeConnectCore {
                     device_id,
                     crate::device::PairState::NotPaired,
                 ));
-                let _ = self.conn_tx.send(conn_event.clone());
-                let _ = self.mpris_conn_tx.send(conn_event);
+                self.broadcast_conn_event(conn_event);
             }
             CoreEvent::DevicePairStateChanged((device_id, pair_state)) => {
                 let conn_event = ConnectionEvent::PairStateChanged((device_id, pair_state));
-                let _ = self.conn_tx.send(conn_event.clone());
-                let _ = self.mpris_conn_tx.send(conn_event);
+                self.broadcast_conn_event(conn_event);
             }
             CoreEvent::SendPacket { device, packet } => {
                 info!("[core] sending packet");
@@ -324,8 +308,7 @@ impl KdeConnectCore {
                 }
 
                 let conn_event = ConnectionEvent::Connected((id.clone(), device.clone()));
-                let _ = self.conn_tx.send(conn_event.clone());
-                let _ = self.mpris_conn_tx.send(conn_event);
+                self.broadcast_conn_event(conn_event);
             }
             TransportEvent::IncomingPacket { addr, id, raw } => {
                 info!("[core] incoming packet.");
@@ -352,8 +335,7 @@ impl KdeConnectCore {
                                             id.clone(),
                                             crate::device::PairState::NotPaired,
                                         ));
-                                        let _ = self.conn_tx.send(conn_event.clone());
-                                        let _ = self.mpris_conn_tx.send(conn_event);
+                                        self.broadcast_conn_event(conn_event);
                                     } else {
                                         info!("[core] pair:false from {} — device not paired, ignoring", id);
                                     }
@@ -375,8 +357,7 @@ impl KdeConnectCore {
                                             device_id_clone,
                                             device_name,
                                         ));
-                                        let _ = self.conn_tx.send(ev.clone());
-                                        let _ = self.mpris_conn_tx.send(ev);
+                                        self.broadcast_conn_event(ev);
                                     }
                                 }
                             }
@@ -422,9 +403,7 @@ impl KdeConnectCore {
                 self.writer_map.lock().await.remove(&id);
                 self.conn_id_map.lock().await.remove(&id);
                 info!("[core] removed dead connection for {}", id);
-                let conn_event = ConnectionEvent::Disconnected(id);
-                let _ = self.conn_tx.send(conn_event.clone());
-                let _ = self.mpris_conn_tx.send(conn_event);
+                self.broadcast_conn_event(ConnectionEvent::Disconnected(id));
             }
         }
     }
@@ -438,13 +417,7 @@ impl KdeConnectCore {
             }
             AppEvent::Pair(device_id) => {
                 info!("frontend sent pair event to device: {}", device_id);
-                if let Some(sender) = guard.get(&device_id) {
-                    let pair = Pair::new(true);
-                    let value = serde_json::to_value(pair).expect("fail serializing pair");
-                    let pkt = ProtocolPacket::new(PacketType::Pair, value);
-                    let _ = sender.send(pkt);
-                    info!("Sent pair request packet to device: {}", device_id);
-                }
+                Self::send_pair_packet(&guard, &device_id, true);
                 self.device_manager
                     .update_pair_state(&device_id, crate::device::PairState::Requesting)
                     .await;
@@ -518,16 +491,8 @@ impl KdeConnectCore {
                 );
                 let request = crate::plugins::mpris::MprisRequest {
                     player: Some(player_name),
-                    request_now_playing: None,
-                    request_player_list: None,
-                    request_volume: None,
-                    seek: None,
-                    set_loop_status: None,
-                    set_position: None,
-                    set_shuffle: None,
-                    set_volume: None,
                     action: Some(action),
-                    album_art_url: None,
+                    ..Default::default()
                 };
                 let value = serde_json::to_value(request).expect("fail serializing packet body");
                 let pkt = ProtocolPacket::new(PacketType::MprisRequest, value);
@@ -551,48 +516,28 @@ impl KdeConnectCore {
                 info!("frontend sent unpair event to device: {}", device_id);
 
                 // Send pair:false to the phone so it knows we've unpaired.
-                if let Some(sender) = guard.get(&device_id) {
-                    let pair = Pair::new(false);
-                    let value = serde_json::to_value(pair).expect("fail serializing pair");
-                    let pkt = ProtocolPacket::new(PacketType::Pair, value);
-                    let _ = sender.send(pkt);
-                    info!("[core] sent pair:false to {} on unpair", device_id);
-                }
+                Self::send_pair_packet(&guard, &device_id, false);
                 drop(guard);
 
                 let _ = self.pairing.cancel_pairing(device_id.clone()).await;
                 cleanup_device_data(&device_id.0).await;
 
-                let conn_event = ConnectionEvent::PairStateChanged((
+                self.broadcast_conn_event(ConnectionEvent::PairStateChanged((
                     device_id,
                     crate::device::PairState::NotPaired,
-                ));
-                let _ = self.conn_tx.send(conn_event.clone());
-                let _ = self.mpris_conn_tx.send(conn_event);
+                )));
                 return;
             }
             AppEvent::AcceptPairing(device_id) => {
                 info!("User accepted pairing from {}", device_id);
                 // Send pair:true to the phone — it is waiting for our response.
-                if let Some(sender) = guard.get(&device_id) {
-                    let pair = Pair::new(true);
-                    let value = serde_json::to_value(pair).expect("fail serializing pair");
-                    let pkt = ProtocolPacket::new(PacketType::Pair, value);
-                    let _ = sender.send(pkt);
-                    info!("[core] sent pair:true to {} on accept", device_id);
-                }
+                Self::send_pair_packet(&guard, &device_id, true);
                 self.device_manager.set_paired(&device_id, true).await;
             }
             AppEvent::RejectPairing(device_id) => {
                 info!("User rejected pairing from {}", device_id);
                 // Send pair:false to the phone so it knows we declined.
-                if let Some(sender) = guard.get(&device_id) {
-                    let pair = Pair::new(false);
-                    let value = serde_json::to_value(pair).expect("fail serializing pair");
-                    let pkt = ProtocolPacket::new(PacketType::Pair, value);
-                    let _ = sender.send(pkt);
-                    info!("[core] sent pair:false to {} on reject", device_id);
-                }
+                Self::send_pair_packet(&guard, &device_id, false);
                 self.device_manager
                     .update_pair_state(&device_id, crate::device::PairState::NotPaired)
                     .await;
@@ -601,9 +546,7 @@ impl KdeConnectCore {
                 info!("frontend sent disconnect event to device: {}", device_id);
                 if guard.remove(&device_id).is_some() {
                     self.conn_id_map.lock().await.remove(&device_id);
-                    let conn_event = ConnectionEvent::Disconnected(device_id);
-                    let _ = self.conn_tx.send(conn_event.clone());
-                    let _ = self.mpris_conn_tx.send(conn_event);
+                    self.broadcast_conn_event(ConnectionEvent::Disconnected(device_id));
                     info!("Connection closed.");
                 }
             }
@@ -644,6 +587,29 @@ impl KdeConnectCore {
 
     pub fn take_events(&self) -> Arc<mpsc::UnboundedSender<AppEvent>> {
         self.out_tx.clone()
+    }
+
+    /// Broadcasts a connection-state event to both the applet and the MPRIS
+    /// D-Bus bridge — every state change needs to reach both listeners.
+    fn broadcast_conn_event(&self, event: ConnectionEvent) {
+        let _ = self.conn_tx.send(event.clone());
+        let _ = self.mpris_conn_tx.send(event);
+    }
+
+    /// Sends a `kdeconnect.pair` packet with the given response if a writer
+    /// exists for the device. Used for both pair requests and pair/unpair
+    /// responses — only the boolean and surrounding log context differ.
+    fn send_pair_packet(
+        guard: &HashMap<DeviceId, mpsc::UnboundedSender<ProtocolPacket>>,
+        device_id: &DeviceId,
+        pair: bool,
+    ) {
+        if let Some(sender) = guard.get(device_id) {
+            let value = serde_json::to_value(Pair::new(pair)).expect("fail serializing pair");
+            let pkt = ProtocolPacket::new(PacketType::Pair, value);
+            let _ = sender.send(pkt);
+            info!("[core] sent pair:{} to {}", pair, device_id);
+        }
     }
 }
 

@@ -11,14 +11,10 @@ use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
 use super::dbus;
+use super::emoji::EmojiCategory;
 use super::models::{Conversation, Message, ProtocolEvent};
 use super::utils;
 use super::views;
-
-#[allow(dead_code)]
-pub fn run(device_id: String, device_name: String) -> cosmic::iced::Result {
-    cosmic::app::run::<SmsWindow>(cosmic::app::Settings::default(), (device_id, device_name))
-}
 
 #[derive(Clone, Debug)]
 pub enum SmsMessage {
@@ -41,10 +37,16 @@ pub enum SmsMessage {
     UpdateNewChatPhone(String),
     SelectContactForNewChat(String, String),
     CreateNewChat,
+
+    // Emoji picker
+    ToggleEmojiPicker,
+    SelectEmojiCategory(EmojiCategory),
+    InsertEmoji(String),
 }
 
 pub struct SmsWindow {
     core: Core,
+    pub accent_color: cosmic::iced::Color,
     pub device_id: String,
     #[allow(dead_code)]
     pub device_name: String,
@@ -56,6 +58,8 @@ pub struct SmsWindow {
     pub search_query: String,
     pub show_new_chat_dialog: bool,
     pub new_chat_phone_input: String,
+    pub show_emoji_picker: bool,
+    pub emoji_category: EmojiCategory,
 }
 
 impl Application for SmsWindow {
@@ -77,6 +81,8 @@ impl Application for SmsWindow {
 
         let mut app = Self {
             core,
+            accent_color: crate::theme::try_load_cosmic_accent()
+                .unwrap_or(crate::theme::FALLBACK_TEAL),
             device_id: device_id.clone(),
             device_name: device_name.clone(),
             conversations: Vec::new(),
@@ -87,6 +93,8 @@ impl Application for SmsWindow {
             search_query: String::new(),
             show_new_chat_dialog: false,
             new_chat_phone_input: String::new(),
+            show_emoji_picker: false,
+            emoji_category: EmojiCategory::Smileys,
         };
 
         let title = fl!("sms-window-title", device = device_name.as_str());
@@ -139,7 +147,14 @@ impl Application for SmsWindow {
 
                 loop {
                     debug!("SMS subscribing to events");
-                    let mut event_stream = client.listen_for_events().await;
+                    let mut event_stream = match client.listen_for_events().await {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!("Failed to subscribe to SMS event stream: {:?}", e);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            continue;
+                        }
+                    };
 
                     // Subscribe FIRST, then request — contacts response is a
                     // fire-and-forget D-Bus signal; if we request before subscribing
@@ -303,6 +318,15 @@ impl Application for SmsWindow {
                 }
             }
             SmsMessage::CloseWindow => std::process::exit(0),
+            SmsMessage::ToggleEmojiPicker => {
+                self.show_emoji_picker = !self.show_emoji_picker;
+            }
+            SmsMessage::SelectEmojiCategory(category) => {
+                self.emoji_category = category;
+            }
+            SmsMessage::InsertEmoji(emoji) => {
+                self.message_input.push_str(&emoji);
+            }
         }
         Task::none()
     }
@@ -342,7 +366,7 @@ impl SmsWindow {
 
                     if let Some(pos) = merged.iter().position(|c| {
                         c.thread_id.starts_with("new_")
-                            && super::utils::phone_numbers_match(
+                            && utils::phone_numbers_match(
                                 &c.phone_number,
                                 &incoming.phone_number,
                             )
@@ -363,7 +387,7 @@ impl SmsWindow {
                         return true;
                     }
                     !conversations.iter().any(|r| {
-                        super::utils::phone_numbers_match(&r.phone_number, &c.phone_number)
+                        utils::phone_numbers_match(&r.phone_number, &c.phone_number)
                     })
                 });
 
@@ -374,7 +398,7 @@ impl SmsWindow {
                 if let Some(phone) = pending_new_phone {
                     if let Some(real) = self.conversations.iter().find(|c| {
                         !c.thread_id.starts_with("new_")
-                            && super::utils::phone_numbers_match(&c.phone_number, &phone)
+                            && utils::phone_numbers_match(&c.phone_number, &phone)
                     }) {
                         self.selected_thread = Some(real.thread_id.clone());
                     }
@@ -428,7 +452,7 @@ impl SmsWindow {
             if let Some(name) = self
                 .contacts
                 .iter()
-                .find(|(phone, _)| super::utils::phone_numbers_match(phone, &conv.phone_number))
+                .find(|(phone, _)| utils::phone_numbers_match(phone, &conv.phone_number))
                 .map(|(_, name)| name.clone())
             {
                 conv.contact_name = name;

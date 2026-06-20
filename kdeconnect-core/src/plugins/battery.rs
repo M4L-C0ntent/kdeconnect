@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tokio::sync::mpsc;
 
-use crate::{device::DeviceState, event::ConnectionEvent, plugin_interface::Plugin};
+use crate::{device::DeviceState, event::ConnectionEvent};
 
 fn serialize_threshold<S>(x: &bool, s: S) -> Result<S::Ok, S::Error>
 where
@@ -38,12 +38,6 @@ pub struct Battery {
         deserialize_with = "deserialize_threshold"
     )]
     pub under_threshold: bool,
-}
-
-impl Plugin for Battery {
-    fn id(&self) -> &'static str {
-        "kdeconnect.battery"
-    }
 }
 
 impl Battery {

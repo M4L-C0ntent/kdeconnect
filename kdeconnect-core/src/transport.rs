@@ -64,6 +64,81 @@ pub enum TransportEvent {
     Disconnected { id: DeviceId, conn_id: u64 },
 }
 
+/// Build a raw `kdeconnect.identity` packet ready to write to a socket.
+/// Used for both pre-TLS and post-TLS identity exchange on both transports.
+fn identity_raw(identity: &Identity) -> Vec<u8> {
+    ProtocolPacket::new(PacketType::Identity, serde_json::to_value(identity).unwrap())
+        .as_raw()
+        .expect("Failed to serialize identity packet")
+}
+
+/// Completes the identity/TLS handshake once a TCP stream to the peer exists
+/// (TCP: just accepted; UDP: just connected after discovery). Shared by both
+/// transports since the sequence — send our identity pre-TLS, accept TLS as
+/// server, send our filtered identity post-TLS, then hand off to
+/// `handle_connection` — is otherwise identical between them.
+///
+/// Callers should spawn this rather than awaiting it inline, so a slow or
+/// stalled peer can't block the accept/recv loop from handling others.
+async fn complete_handshake(
+    mut stream: TcpStream,
+    our_identity: Arc<Identity>,
+    server_config: Arc<rustls::ServerConfig>,
+    peer: SocketAddr,
+    id: DeviceId,
+    name: String,
+    event_tx: mpsc::UnboundedSender<TransportEvent>,
+) {
+    if let Err(e) = stream.write_all(&identity_raw(&our_identity)).await {
+        warn!(peer = ?peer, "[handshake] failed to send pre-TLS identity: {}", e);
+        return;
+    }
+    let _ = stream.flush().await;
+
+    let mut tls_stream = match TlsAcceptor::from(server_config).accept(stream).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!(peer = ?peer, "[handshake] TLS accept failed: {}", e);
+            return;
+        }
+    };
+    info!(peer = ?peer, device_id = ?id, "[handshake] TLS established");
+
+    // Filter capabilities based on per-device disabled plugins so the phone
+    // immediately knows which packet types to stop sending.
+    let filtered = filtered_identity_for_device(&id.0).await;
+    if let Err(e) = tls_stream.write_all(&identity_raw(&filtered)).await {
+        warn!(peer = ?peer, "[handshake] failed to send post-TLS identity: {}", e);
+        return;
+    }
+    let _ = tls_stream.flush().await;
+
+    let (reader, writer) = split(tls_stream);
+    let (write_tx, write_rx) = mpsc::unbounded_channel::<ProtocolPacket>();
+    let write_rx = Arc::new(Mutex::new(write_rx));
+    let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    tokio::spawn(handle_connection(
+        event_tx.clone(),
+        reader,
+        writer,
+        write_rx,
+        peer,
+        id.clone(),
+        conn_id,
+    ));
+
+    if let Err(e) = event_tx.send(TransportEvent::NewConnection {
+        addr: peer,
+        id,
+        name,
+        write_tx,
+        conn_id,
+    }) {
+        error!(peer = ?peer, "[handshake] transport event channel closed: {}", e);
+    }
+}
+
 /// Enable TCP keepalive so the OS detects a dead connection within ~60s
 /// (30s idle + 3 × 10s probes) rather than waiting indefinitely.
 fn apply_keepalive(stream: &TcpStream) {
@@ -114,18 +189,15 @@ impl TcpTransport {
         info!("TCP listener bound to {}", self.listen_addr);
 
         loop {
-            let event_tx = self.event_tx.clone();
-            let identity = self.identity.clone();
-
             match listener.accept().await {
                 Ok((mut stream, peer)) => {
                     info!(peer = ?peer, "[tcp] new connection");
                     apply_keepalive(&stream);
 
-                    // Step 1: read phone's pre-TLS identity.
-                    // Read byte-by-byte to avoid BufReader consuming TLS ClientHello
-                    // bytes into its internal buffer, which would cause "tls handshake eof".
-                    debug!(peer = ?peer, "[tcp] step 1: reading pre-TLS identity");
+                    // Read phone's pre-TLS identity. Read byte-by-byte to avoid
+                    // BufReader consuming TLS ClientHello bytes into its internal
+                    // buffer, which would cause "tls handshake eof".
+                    debug!(peer = ?peer, "[tcp] reading pre-TLS identity");
                     let buffer = {
                         let mut raw = Vec::new();
                         let mut byte = [0u8; 1];
@@ -151,9 +223,7 @@ impl TcpTransport {
                         }
                         String::from_utf8_lossy(&raw).into_owned()
                     };
-                    debug!(peer = ?peer, "[tcp] step 1: read {} bytes", buffer.len());
-
-                    let identity = identity.clone();
+                    debug!(peer = ?peer, "[tcp] read {} bytes", buffer.len());
 
                     let packet = match serde_json::from_str::<ProtocolPacket>(&buffer) {
                         Ok(p) => p,
@@ -187,85 +257,22 @@ impl TcpTransport {
                     let id = peer_identity.device_id.clone();
                     info!(peer = ?peer, device_id = ?id, device_name = name, "[tcp] identified peer");
 
-                    if identity.device_id == peer_identity.device_id {
+                    if self.identity.device_id == peer_identity.device_id {
                         warn!(peer = ?peer, device_id = ?id, "skipping the same device");
                         continue;
                     }
 
-                    // Step 2: send our identity back pre-TLS
-                    debug!(peer = ?peer, "[tcp] step 2: sending our pre-TLS identity");
-                    let our_identity = ProtocolPacket::new(
-                        PacketType::Identity,
-                        serde_json::to_value(&*self.identity).unwrap(),
-                    )
-                    .as_raw()
-                    .expect("Failed to serialize identity packet");
-                    if let Err(e) = stream.write_all(our_identity.as_slice()).await {
-                        warn!(peer = ?peer, "[tcp] failed to send pre-TLS identity: {}", e);
-                        continue;
-                    }
-                    let _ = stream.flush().await;
-                    debug!(peer = ?peer, "[tcp] step 2: pre-TLS identity sent");
-
-                    // Step 3: TLS handshake — we are the server (phone connected to us)
-                    debug!(peer = ?peer, "[tcp] step 3: starting TLS accept (we are server)");
-                    let mut tls_stream = match TlsAcceptor::from(self.server_config.clone())
-                        .accept(stream)
-                        .await
-                    {
-                        Ok(s) => s,
-                        Err(e) => {
-                            warn!(peer = ?peer, "[tcp] TLS accept failed: {}", e);
-                            continue;
-                        }
-                    };
-                    info!(peer = ?peer, device_id = ?id, "[tcp] step 3: TLS established");
-
-                    // Step 4: send our identity post-TLS for plugin negotiation.
-                    // Filter capabilities based on per-device disabled plugins so
-                    // the phone immediately knows which packet types to stop sending.
-                    debug!(peer = ?peer, "[tcp] step 4: sending post-TLS identity");
-                    let filtered = filtered_identity_for_device(&id).await;
-                    let post_tls_identity = ProtocolPacket::new(
-                        PacketType::Identity,
-                        serde_json::to_value(&filtered).unwrap(),
-                    )
-                    .as_raw()
-                    .expect("Failed to serialize identity packet");
-                    if let Err(e) = tls_stream.write_all(post_tls_identity.as_slice()).await {
-                        warn!(peer = ?peer, "[tcp] failed to send post-TLS identity: {}", e);
-                        continue;
-                    }
-                    let _ = tls_stream.flush().await;
-                    debug!(peer = ?peer, "[tcp] step 4: post-TLS identity sent");
-
-                    let (reader, writer) = split(tls_stream);
-
-                    let (write_tx, write_rx) = mpsc::unbounded_channel::<ProtocolPacket>();
-                    let write_rx = Arc::new(Mutex::new(write_rx));
-
-                    let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-                    // Do NOT .await the spawn — blocks the accept loop until connection closes.
-                    tokio::spawn(handle_connection(
-                        event_tx.clone(),
-                        reader,
-                        writer,
-                        write_rx,
+                    // Identity exchange + TLS is spawned so a slow or stalled
+                    // peer can't block the accept loop from handling others.
+                    tokio::spawn(complete_handshake(
+                        stream,
+                        self.identity.clone(),
+                        self.server_config.clone(),
                         peer,
-                        DeviceId(id.clone()),
-                        conn_id,
+                        DeviceId(id),
+                        name,
+                        self.event_tx.clone(),
                     ));
-
-                    if let Err(e) = event_tx.send(TransportEvent::NewConnection {
-                        addr: peer,
-                        id: DeviceId(peer_identity.device_id),
-                        name: name.clone(),
-                        write_tx,
-                        conn_id,
-                    }) {
-                        error!(peer = ?peer, "[tcp] transport event channel closed: {}", e);
-                    }
                 }
                 Err(e) => {
                     warn!("[tcp] accept error: {}", e);
@@ -339,12 +346,7 @@ impl UdpTransport {
         let interval = self.discovery_interval;
         let udp_socket = self.socket.clone();
 
-        let packet = ProtocolPacket::new(
-            PacketType::Identity,
-            serde_json::to_value(&*self.identity).unwrap(),
-        )
-        .as_raw()
-        .expect("Failed to serialize identity packet");
+        let packet = identity_raw(&self.identity);
 
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -366,11 +368,7 @@ impl UdpTransport {
     }
 
     pub async fn listen(&self) -> anyhow::Result<()> {
-        let event_tx = self.event_tx.clone();
-        let this_identity = self.identity.clone();
-
         loop {
-            let this_identity = this_identity.clone();
             let mut buf = vec![0u8; 8192];
 
             match self.socket.recv_from(&mut buf).await {
@@ -384,96 +382,42 @@ impl UdpTransport {
                         }
                     };
 
-                    if let Ok(peer_identity) = serde_json::from_value::<Identity>(packet.body) {
-                        if this_identity.device_id == peer_identity.device_id {
-                            warn!("[udp] skipping the same device");
-                            continue;
-                        }
+                    let Ok(peer_identity) = serde_json::from_value::<Identity>(packet.body) else {
+                        continue;
+                    };
 
-                        let id = DeviceId(peer_identity.device_id.clone());
-                        let name = peer_identity.device_name.clone();
+                    if self.identity.device_id == peer_identity.device_id {
+                        warn!("[udp] skipping the same device");
+                        continue;
+                    }
 
-                        if let Some(new_port) = peer_identity.tcp_port {
-                            peer.set_port(new_port);
-                            info!(peer = ?peer, device_id = ?id, device_name = name, "Device supports TCP");
-                        }
+                    let id = DeviceId(peer_identity.device_id.clone());
+                    let name = peer_identity.device_name.clone();
 
-                        let mut stream = match TcpStream::connect(peer).await {
+                    if let Some(new_port) = peer_identity.tcp_port {
+                        peer.set_port(new_port);
+                        info!(peer = ?peer, device_id = ?id, device_name = name, "Device supports TCP");
+                    }
+
+                    // Connecting and the handshake are spawned so a slow or
+                    // unreachable peer can't block the UDP recv loop.
+                    let identity = self.identity.clone();
+                    let server_config = self.server_config.clone();
+                    let event_tx = self.event_tx.clone();
+                    tokio::spawn(async move {
+                        let stream = match TcpStream::connect(peer).await {
                             Ok(s) => {
                                 apply_keepalive(&s);
                                 s
                             }
                             Err(e) => {
                                 warn!(peer = ?peer, "[udp] TCP connect failed: {}", e);
-                                continue;
+                                return;
                             }
                         };
-
-                        // Send identity pre-TLS — phone reads this before initiating TLS.
-                        let pre_tls_identity = ProtocolPacket::new(
-                            PacketType::Identity,
-                            serde_json::to_value(&*self.identity).unwrap(),
-                        )
-                        .as_raw()
-                        .expect("Failed to serialize identity packet");
-
-                        let _ = stream.write_all(pre_tls_identity.as_slice()).await;
-                        let _ = stream.flush().await;
-
-                        let acceptor = TlsAcceptor::from(self.server_config.clone());
-
-                        let mut tls_stream = match acceptor.accept(stream).await {
-                            Ok(s) => s,
-                            Err(e) => {
-                                warn!(peer = ?peer, "[udp] TLS handshake failed: {}", e);
-                                continue;
-                            }
-                        };
-
-                        info!(peer = ?peer, device_id = ?id, device_name = name, "[udp] Established TLS connection");
-
-                        // Send identity post-TLS — phone uses this for plugin negotiation.
-                        // Filter capabilities based on per-device disabled plugins so
-                        // the phone immediately knows which packet types to stop sending.
-                        let filtered = filtered_identity_for_device(&id.0).await;
-                        let post_tls_identity = ProtocolPacket::new(
-                            PacketType::Identity,
-                            serde_json::to_value(&filtered).unwrap(),
-                        )
-                        .as_raw()
-                        .expect("Failed to serialize identity packet");
-
-                        let _ = tls_stream.write_all(post_tls_identity.as_slice()).await;
-                        let _ = tls_stream.flush().await;
-
-                        let (reader, writer) = split(tls_stream);
-
-                        let (write_tx, write_rx) = mpsc::unbounded_channel::<ProtocolPacket>();
-                        let write_rx = Arc::new(Mutex::new(write_rx));
-
-                        let conn_id = CONN_COUNTER.fetch_add(1, Ordering::Relaxed);
-
-                        // Do NOT .await the spawn — blocks the UDP listen loop.
-                        tokio::spawn(handle_connection(
-                            event_tx.clone(),
-                            reader,
-                            writer,
-                            write_rx,
-                            peer,
-                            id.clone(),
-                            conn_id,
-                        ));
-
-                        if let Err(e) = event_tx.send(TransportEvent::NewConnection {
-                            addr: peer,
-                            id: DeviceId(peer_identity.device_id),
-                            name: name.clone(),
-                            write_tx,
-                            conn_id,
-                        }) {
-                            error!(peer = ?peer, device_id = ?id, "[udp] transport event channel closed: {}", e);
-                        }
-                    }
+                        complete_handshake(stream, identity, server_config, peer, id, name, event_tx)
+                            .await;
+                    });
                 }
                 Err(e) => {
                     warn!("[udp] recv_from error: {}", e);

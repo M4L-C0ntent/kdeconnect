@@ -79,7 +79,6 @@ pub async fn fetch_contacts(device_id: &str) {
     }
 }
 
-#[allow(dead_code)]
 pub async fn get_cached_contacts(device_id: &str) -> std::collections::HashMap<String, String> {
     debug!("get_cached_contacts device={}", device_id);
     let Some(client) = get_client().await else {
@@ -100,7 +99,6 @@ pub async fn get_cached_contacts(device_id: &str) -> std::collections::HashMap<S
     }
 }
 
-#[allow(dead_code)]
 pub async fn get_cached_sms(device_id: &str) -> Option<String> {
     debug!("get_cached_sms device={}", device_id);
     let Some(client) = get_client().await else {

@@ -4,6 +4,7 @@ use cosmic::app::Core;
 use cosmic::iced::{Alignment, Length};
 use cosmic::{Element, widget};
 use std::collections::HashMap;
+use crate::theme;
 
 /// Build the popup view using the real application Core so popup_container
 /// has proper applet context, theme, and sizing.
@@ -12,6 +13,7 @@ pub fn create_popup_view<'a>(
     devices: &'a HashMap<String, Device>,
     expanded_device: Option<&'a String>,
     pairing_requests: Option<&'a HashMap<String, String>>,
+    accent_color: cosmic::iced::Color,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::active().cosmic().spacing;
     let mut content = widget::Column::new()
@@ -24,7 +26,8 @@ pub fn create_popup_view<'a>(
             .push(
                 widget::text(fl!("applet-title"))
                     .size(18)
-                    .width(Length::Fill),
+                    .width(Length::Fill)
+                    .class(cosmic::theme::Text::Color(accent_color)),
             )
             .push(widget::button::standard(fl!("applet-settings")).on_press(Message::OpenSettings))
             .spacing(spacing.space_xs)
@@ -40,7 +43,8 @@ pub fn create_popup_view<'a>(
             content = content.push(
                 widget::text(fl!("pairing-requests"))
                     .size(14)
-                    .font(cosmic::font::bold()),
+                    .font(cosmic::font::bold())
+                    .class(cosmic::theme::Text::Color(accent_color)),
             );
 
             let mut sorted: Vec<(&String, &String)> = requests.iter().collect();
@@ -82,6 +86,14 @@ pub fn create_popup_view<'a>(
                         .spacing(spacing.space_xs),
                 )
                 .padding(spacing.space_s)
+                .style(move |_: &cosmic::Theme| cosmic::widget::container::Style {
+                    border: cosmic::iced::Border {
+                        color: accent_color,
+                        width: 1.5,
+                        radius: 8.0.into(),
+                    },
+                    ..Default::default()
+                })
                 .class(cosmic::theme::Container::Card)
                 .width(Length::Fill);
 
@@ -104,10 +116,15 @@ pub fn create_popup_view<'a>(
                 .center_x(Length::Fill),
         );
     } else {
-        content = content.push(widget::text(fl!("devices-header")).size(14).font(cosmic::font::bold()));
+        content = content.push(
+            widget::text(fl!("devices-header"))
+                .size(14)
+                .font(cosmic::font::bold())
+                .class(cosmic::theme::Text::Color(accent_color)),
+        );
 
         for device in paired_devices {
-            content = content.push(create_device_card(device, &spacing, expanded_device));
+            content = content.push(create_device_card(device, &spacing, expanded_device, accent_color));
         }
     }
 
@@ -125,12 +142,13 @@ fn create_device_card<'a>(
     device: &'a Device,
     spacing: &cosmic::cosmic_theme::Spacing,
     expanded_device: Option<&'a String>,
+    accent_color: cosmic::iced::Color,
 ) -> Element<'a, Message> {
     let is_expanded = expanded_device == Some(&device.id);
     let is_online = device.is_reachable;
 
     let mut name_row = widget::Row::new()
-        .push(widget::icon::from_name(device.device_icon()).size(20))
+        .push(widget::icon(theme::accent_icon(device.device_icon(), accent_color)).size(20))
         .push(widget::text(&device.name).size(14).width(Length::Fill))
         .spacing(spacing.space_xs)
         .align_y(Alignment::Center);
@@ -139,25 +157,24 @@ fn create_device_card<'a>(
         name_row = name_row.push(widget::text(fl!("devices-offline")).size(11));
     } else {
         if let Some(signal_icon) = device.signal_icon() {
-            name_row = name_row.push(widget::icon::from_name(signal_icon).size(16));
+            name_row = name_row.push(widget::icon(theme::accent_icon(signal_icon, accent_color)).size(16));
         }
         if let Some(level) = device.battery_level {
             name_row = name_row.push(
                 widget::Row::new()
                     .spacing(2)
                     .align_y(Alignment::Center)
-                    .push(widget::icon::from_name(device.battery_icon()).size(16))
+                    .push(widget::icon(theme::accent_icon(device.battery_icon(), accent_color)).size(16))
                     .push(widget::text(format!("{}%", level)).size(11)),
             );
         }
     }
 
     name_row = name_row.push(
-        widget::button::icon(widget::icon::from_name(if is_expanded {
-            "go-up-symbolic"
-        } else {
-            "go-down-symbolic"
-        }))
+        widget::button::icon(theme::accent_icon(
+            if is_expanded { "go-up-symbolic" } else { "go-down-symbolic" },
+            accent_color,
+        ))
         .on_press(Message::ToggleDeviceMenu(device.id.clone()))
         .class(cosmic::theme::Button::Icon),
     );
@@ -165,7 +182,7 @@ fn create_device_card<'a>(
     let device_button = widget::button::custom(name_row)
         .on_press(Message::ToggleDeviceMenu(device.id.clone()))
         .width(Length::Fill)
-        .class(cosmic::theme::Button::Text);
+        .class(theme::accent_link_button(accent_color));
 
     let mut col = widget::Column::new().push(device_button);
 
@@ -175,13 +192,14 @@ fn create_device_card<'a>(
         menu_items = menu_items.push(
             widget::text(fl!("quick-actions-header"))
                 .size(12)
-                .font(cosmic::font::bold()),
+                .font(cosmic::font::bold())
+                .class(cosmic::theme::Text::Color(accent_color)),
         );
         menu_items = menu_items.push(
             widget::button::text(fl!("quick-actions-ping"))
                 .on_press(Message::PingDevice(device.id.clone()))
                 .width(Length::Fill)
-                .class(cosmic::theme::Button::Text),
+                .class(theme::accent_link_button(accent_color)),
         );
 
         if device.has_findmyphone {
@@ -189,7 +207,7 @@ fn create_device_card<'a>(
                 widget::button::text(fl!("quick-actions-find-phone"))
                     .on_press(Message::RingDevice(device.id.clone()))
                     .width(Length::Fill)
-                    .class(cosmic::theme::Button::Text),
+                    .class(theme::accent_link_button(accent_color)),
             );
         }
 
@@ -198,7 +216,7 @@ fn create_device_card<'a>(
                 widget::button::text(fl!("quick-actions-share-clipboard"))
                     .on_press(Message::ShareClipboard(device.id.clone()))
                     .width(Length::Fill)
-                    .class(cosmic::theme::Button::Text),
+                    .class(theme::accent_link_button(accent_color)),
             );
         }
 
@@ -206,7 +224,7 @@ fn create_device_card<'a>(
             widget::button::text(fl!("quick-actions-sms"))
                 .on_press(Message::SendSMS(device.id.clone()))
                 .width(Length::Fill)
-                .class(cosmic::theme::Button::Text),
+                .class(theme::accent_link_button(accent_color)),
         );
 
         if device.has_share || device.has_sftp {
@@ -222,13 +240,13 @@ fn create_device_card<'a>(
                     widget::button::text(fl!("quick-actions-send-file"))
                         .on_press(Message::SendFiles(device.id.clone()))
                         .width(Length::Fill)
-                        .class(cosmic::theme::Button::Text),
+                        .class(theme::accent_link_button(accent_color)),
                 );
-                menu_items = menu_items.push_maybe(if let Some(progress) = device.share_progress {
-                    Some(widget::progress_bar::determinate_linear(progress as f32 / 100.0))
-                } else {
-                    None
-                });
+                menu_items = menu_items.push_maybe(
+                    device.share_progress.map(|progress| {
+                        widget::progress_bar::determinate_linear(progress as f32 / 100.0)
+                    }),
+                );
             }
 
             if device.has_sftp {
@@ -236,7 +254,7 @@ fn create_device_card<'a>(
                     widget::button::text(fl!("quick-actions-browse-device"))
                         .on_press(Message::BrowseDevice(device.id.clone()))
                         .width(Length::Fill)
-                        .class(cosmic::theme::Button::Text),
+                        .class(theme::accent_link_button(accent_color)),
                 );
             }
         }

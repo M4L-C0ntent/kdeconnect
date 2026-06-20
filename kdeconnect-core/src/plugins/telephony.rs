@@ -7,8 +7,6 @@ use tracing::info;
 use crate::{
     device::Device,
     event::CoreEvent,
-    plugin_interface::Plugin,
-    protocol::{PacketType, ProtocolPacket},
 };
 
 // Pause/resume is handled by mpris::monitor_mpris via telephony_call_signal()
@@ -32,15 +30,6 @@ pub struct TelephonyPacket {
     pub message_body: Option<String>,
     #[serde(rename = "isCancel")]
     pub is_cancel: Option<bool>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
-pub struct TelephonyRequestMute {}
-
-impl Plugin for TelephonyPacket {
-    fn id(&self) -> &'static str {
-        "telephony"
-    }
 }
 
 impl TelephonyPacket {
@@ -135,14 +124,5 @@ impl TelephonyPacket {
             notif.show().ok();
         })
         .await;
-    }
-
-    /// Send a kdeconnect.telephony.request_mute to silence the phone's ringer.
-    pub fn send_mute_request(device: &Device, core_event: &mpsc::UnboundedSender<CoreEvent>) {
-        let packet = ProtocolPacket::new(PacketType::TelephonyRequestMute, serde_json::json!({}));
-        let _ = core_event.send(CoreEvent::SendPacket {
-            device: device.device_id.clone(),
-            packet,
-        });
     }
 }

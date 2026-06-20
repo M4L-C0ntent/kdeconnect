@@ -14,4 +14,4 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
 kdeconnect-varlink = { path = "../kdeconnect-varlink" }
-varlink = { version = "13", features = ["tokio"] }
+varlink = { workspace = true }

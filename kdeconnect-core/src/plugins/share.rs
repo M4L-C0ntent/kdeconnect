@@ -6,7 +6,6 @@ use tracing::{info, warn};
 
 use crate::{
     device::Device,
-    plugin_interface::Plugin,
     protocol::{PacketPayloadTransferInfo, PacketType, ProtocolPacket},
     transport::receive_payload,
 };
@@ -185,12 +184,6 @@ fn unique_path(dir: &PathBuf, filename: &str) -> PathBuf {
 pub struct ShareRequestFile {
     pub filename: String,
     pub open: Option<bool>,
-}
-
-impl Plugin for ShareRequest {
-    fn id(&self) -> &'static str {
-        "kdeconnect.share.request"
-    }
 }
 
 impl ShareRequest {

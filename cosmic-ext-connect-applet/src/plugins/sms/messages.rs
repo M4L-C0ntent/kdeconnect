@@ -20,11 +20,11 @@ pub enum SmsMessage {
     UpdateInput(String),
     UpdateSearch(String),
     SendMessage,
-    #[allow(dead_code)] // May be used in future for manual refresh
+    /// May be used in future for manual refresh
     RefreshThread,
 
     // Window control
-    #[allow(dead_code)] // Will be used when window close event is hooked up
+    /// Will be used when window close event is hooked up
     CloseWindow,
 
     // Protocol events (replacing D-Bus signals)

@@ -1,5 +1,4 @@
 use pin_project::pin_project;
-use std::ops::Div;
 use tokio::{
     io::AsyncRead,
     sync::mpsc::{self},
@@ -72,7 +71,7 @@ impl<R: AsyncRead> AsyncRead for TransferAdapter<R> {
 
 fn calculate_progress(transferred: f64, total: f64) -> u8 {
     if total > 0.0 && transferred > 0.0 {
-        (transferred.div(total) * 100.0).round().min(100.0) as u8
+        (transferred / total * 100.0).round().min(100.0) as u8
     } else {
         0
     }

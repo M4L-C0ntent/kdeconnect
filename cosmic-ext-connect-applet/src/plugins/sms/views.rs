@@ -6,6 +6,7 @@ use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 
 use super::app::{SmsMessage, SmsWindow};
+use super::emoji::EmojiCategory;
 use super::models::Conversation;
 use super::utils::{format_timestamp, normalize_phone_number, phone_numbers_match};
 
@@ -162,6 +163,7 @@ fn view_conversations_list<'a>(
         widget::container(
             widget::button::suggested(fl!("sms-new-chat-start"))
                 .on_press(SmsMessage::OpenNewChatDialog)
+                .class(crate::theme::accent_filled_button(app.accent_color))
                 .width(Length::Fill),
         )
         .padding(spacing.space_s),
@@ -237,15 +239,18 @@ fn view_conversation_item<'a>(
     let display_name =
         get_contact_name(app, &conv.phone_number).unwrap_or_else(|| conv.phone_number.clone());
 
+    let accent = app.accent_color;
     let flat_button_class = cosmic::theme::Button::Custom {
-        active: Box::new(|focused, theme| {
+        active: Box::new(move |focused, theme| {
             let mut s = theme.active(focused, false, &cosmic::theme::Button::Text);
             s.border_radius = cosmic::iced::Radius::from(0.0);
+            s.text_color = Some(accent);
             s
         }),
-        hovered: Box::new(|focused, theme| {
+        hovered: Box::new(move |focused, theme| {
             let mut s = theme.hovered(focused, false, &cosmic::theme::Button::Text);
             s.border_radius = cosmic::iced::Radius::from(0.0);
+            s.text_color = Some(accent);
             s
         }),
         disabled: Box::new(|theme| {
@@ -253,9 +258,10 @@ fn view_conversation_item<'a>(
             s.border_radius = cosmic::iced::Radius::from(0.0);
             s
         }),
-        pressed: Box::new(|focused, theme| {
+        pressed: Box::new(move |focused, theme| {
             let mut s = theme.pressed(focused, false, &cosmic::theme::Button::Text);
             s.border_radius = cosmic::iced::Radius::from(0.0);
+            s.text_color = Some(accent);
             s
         }),
     };
@@ -451,7 +457,12 @@ fn view_message_input<'a>(
     spacing: &cosmic::cosmic_theme::Spacing,
 ) -> Element<'a, SmsMessage> {
     let message_placeholder = fl!("sms-message-placeholder");
-    widget::Row::new()
+
+    let input_row = widget::Row::new()
+        .push(
+            widget::button::icon(widget::icon::from_name("face-smile-symbolic").handle())
+                .on_press(SmsMessage::ToggleEmojiPicker),
+        )
         .push(
             widget::text_input(message_placeholder, &app.message_input)
                 .on_input(SmsMessage::UpdateInput)
@@ -459,11 +470,65 @@ fn view_message_input<'a>(
                 .padding(spacing.space_s)
                 .width(Length::Fill),
         )
-        .push(widget::button::suggested(fl!("sms-send")).on_press(SmsMessage::SendMessage))
+        .push(
+            widget::button::suggested(fl!("sms-send"))
+                .on_press(SmsMessage::SendMessage)
+                .class(crate::theme::accent_filled_button(app.accent_color))
+        )
         .spacing(spacing.space_xs)
-        .padding(spacing.space_s)
-        .align_y(Alignment::Center)
-        .into()
+        .align_y(Alignment::Center);
+
+    let mut col = widget::Column::new().spacing(spacing.space_xs);
+    if app.show_emoji_picker {
+        col = col.push(view_emoji_picker(app, spacing));
+    }
+    col = col.push(input_row);
+
+    col.padding(spacing.space_s).into()
+}
+
+/// Emoji picker panel: category tabs + a scrollable grid of emoji for the
+/// selected category. Stays open after inserting an emoji so multiple can
+/// be picked in a row.
+fn view_emoji_picker<'a>(
+    app: &'a SmsWindow,
+    spacing: &cosmic::cosmic_theme::Spacing,
+) -> Element<'a, SmsMessage> {
+    let mut tabs = widget::Row::new().spacing(spacing.space_xxs);
+    for category in EmojiCategory::all() {
+        let is_active = app.emoji_category == category;
+        let tab = widget::button::text(category.label())
+            .on_press(SmsMessage::SelectEmojiCategory(category));
+        tabs = tabs.push(if is_active {
+            tab.class(cosmic::theme::Button::Suggested)
+        } else {
+            tab.class(cosmic::theme::Button::Text)
+        });
+    }
+
+    let mut grid = widget::Column::new().spacing(spacing.space_xxs);
+    for row_emojis in app.emoji_category.emojis().chunks(8) {
+        let mut row = widget::Row::new().spacing(spacing.space_xxs);
+        for emoji in row_emojis {
+            row = row.push(
+                widget::button::text(*emoji)
+                    .on_press(SmsMessage::InsertEmoji(emoji.to_string())),
+            );
+        }
+        grid = grid.push(row);
+    }
+
+    widget::container(
+        widget::Column::new()
+            .spacing(spacing.space_xs)
+            .padding(spacing.space_s)
+            .push(tabs)
+            .push(widget::divider::horizontal::light())
+            .push(widget::scrollable(grid).height(Length::Fixed(160.0))),
+    )
+    .class(cosmic::theme::Container::Card)
+    .width(Length::Fill)
+    .into()
 }
 
 // Helper functions

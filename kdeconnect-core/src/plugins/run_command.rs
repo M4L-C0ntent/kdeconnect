@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::plugin_interface::Plugin;
+use crate::config::CONFIG_DIR;
 use crate::protocol::{PacketType, ProtocolPacket};
 
 // ---------------------------------------------------------------------------
@@ -18,15 +18,12 @@ pub struct LocalCommand {
     pub command: String,
 }
 
+// dirs::config_dir() already reads XDG_CONFIG_HOME (sandboxed under Flatpak)
+// and falls back to ~/.config outside it.
 fn commands_config_path() -> std::path::PathBuf {
-    // Inside Flatpak XDG_CONFIG_HOME points to the sandboxed config dir.
-    // Outside Flatpak it is unset and falls back to ~/.config.
-    let config_home = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{}/.config", home)
-    });
-    std::path::PathBuf::from(config_home)
-        .join("kdeconnect")
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(CONFIG_DIR)
         .join("runcommand.json")
 }
 
@@ -62,13 +59,6 @@ pub struct RunCommand {
     pub can_add_command: bool,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[allow(dead_code)]
-pub struct RunCommandItem {
-    pub name: String,
-    pub command: String,
-}
-
 /// Incoming `kdeconnect.runcommand.request` from the phone:
 ///   - `key` -> execute the named command on this desktop
 ///   - `requestCommandList` -> send our command list back
@@ -77,12 +67,6 @@ pub struct RunCommandRequest {
     pub key: Option<String>,
     #[serde(rename = "requestCommandList")]
     pub request_command_list: Option<bool>,
-}
-
-impl Plugin for RunCommandRequest {
-    fn id(&self) -> &'static str {
-        "kdeconnect.runcommand.request"
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +78,6 @@ impl RunCommand {
     pub async fn received_packet(
         &self,
         device: &crate::device::Device,
-        _connection_tx: mpsc::UnboundedSender<crate::event::ConnectionEvent>,
         core_tx: mpsc::UnboundedSender<crate::event::CoreEvent>,
     ) {
         // Parse the commandList JSON string into individual commands.
@@ -147,7 +130,6 @@ impl RunCommandRequest {
     pub async fn received_packet(
         &self,
         device: &crate::device::Device,
-        _connection_tx: mpsc::UnboundedSender<crate::event::ConnectionEvent>,
         core_tx: mpsc::UnboundedSender<crate::event::CoreEvent>,
     ) {
         if let Some(key) = &self.key {

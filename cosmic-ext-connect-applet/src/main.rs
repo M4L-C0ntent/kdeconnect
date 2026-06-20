@@ -12,6 +12,7 @@ use cosmic::iced::{Limits, Subscription};
 use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
 use cosmic::{Element, Task, widget};
 use std::collections::HashMap;
+use cosmic_ext_connect_applet::theme;
 use tracing::{debug, error, info};
 
 pub struct KdeConnectApplet {
@@ -21,6 +22,32 @@ pub struct KdeConnectApplet {
     expanded_device: Option<String>,
     /// Pending pairing requests: device_id → device_name
     pairing_requests: HashMap<String, String>,
+    accent_color: cosmic::iced::Color,
+}
+
+impl KdeConnectApplet {
+    /// Creates a new popup surface (tracked in `self.popup`) with the
+    /// applet's standard size limits. Shared by TogglePopup and
+    /// PairingRequestReceived, which both need to open the popup.
+    fn show_popup(&mut self) -> Task<cosmic::Action<Message>> {
+        let new_id = SurfaceId::unique();
+        self.popup.replace(new_id);
+
+        let mut popup_settings = self.core.applet.get_popup_settings(
+            self.core.main_window_id().unwrap(),
+            new_id,
+            None,
+            None,
+            None,
+        );
+        popup_settings.positioner.size_limits = Limits::NONE
+            .max_width(400.0)
+            .min_width(300.0)
+            .min_height(200.0)
+            .max_height(600.0);
+
+        get_popup(popup_settings)
+    }
 }
 
 impl cosmic::Application for KdeConnectApplet {
@@ -49,6 +76,8 @@ impl cosmic::Application for KdeConnectApplet {
             devices: HashMap::new(),
             expanded_device: None,
             pairing_requests: HashMap::new(),
+            accent_color: theme::try_load_cosmic_accent()
+                .unwrap_or(theme::FALLBACK_TEAL),
         };
 
         (app, Task::none())
@@ -58,30 +87,15 @@ impl cosmic::Application for KdeConnectApplet {
         Some(Message::PopupClosed(id))
     }
 
-    fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
-        match message {
+    fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {        match message {
             Message::TogglePopup => {
+                self.accent_color = theme::try_load_cosmic_accent()
+                    .unwrap_or(theme::FALLBACK_TEAL);
                 return if let Some(p) = self.popup.take() {
                     destroy_popup(p)
                 } else {
-                    let new_id = SurfaceId::unique();
-                    self.popup.replace(new_id);
-
-                    let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
-                        new_id,
-                        None,
-                        None,
-                        None,
-                    );
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(400.0)
-                        .min_width(300.0)
-                        .min_height(200.0)
-                        .max_height(600.0);
-
                     Task::batch(vec![
-                        get_popup(popup_settings),
+                        self.show_popup(),
                         Task::perform(backend::fetch_devices(), |devices| {
                             cosmic::Action::App(Message::DevicesUpdated(devices))
                         }),
@@ -267,7 +281,7 @@ impl cosmic::Application for KdeConnectApplet {
                     |_| cosmic::Action::App(Message::RefreshDevices),
                 );
             }
-            Message::PairingRequestReceived(device_id, device_name, _device_type) => {
+            Message::PairingRequestReceived(device_id, device_name) => {
                 info!("Pairing request received from {} ({})", device_name, device_id);
                 self.pairing_requests.insert(device_id, device_name.clone());
 
@@ -289,21 +303,7 @@ impl cosmic::Application for KdeConnectApplet {
 
                 // Ensure popup is open so the user sees Accept/Decline immediately.
                 if self.popup.is_none() {
-                    let new_id = SurfaceId::unique();
-                    self.popup.replace(new_id);
-                    let mut popup_settings = self.core.applet.get_popup_settings(
-                        self.core.main_window_id().unwrap(),
-                        new_id,
-                        None,
-                        None,
-                        None,
-                    );
-                    popup_settings.positioner.size_limits = Limits::NONE
-                        .max_width(400.0)
-                        .min_width(300.0)
-                        .min_height(200.0)
-                        .max_height(600.0);
-                    return get_popup(popup_settings);
+                    return self.show_popup();
                 }
             }
             Message::MprisReceived(device_id, mpris_data) => {
@@ -389,6 +389,7 @@ impl cosmic::Application for KdeConnectApplet {
             &self.devices,
             self.expanded_device.as_ref(),
             Some(&self.pairing_requests),
+            self.accent_color,
         )
     }
 
@@ -411,7 +412,7 @@ impl cosmic::Application for KdeConnectApplet {
                     while let Some(event) = stream.next().await {
                         match event {
                             kdeconnect_dbus_client::ServiceEvent::PairingRequested(id, name) => {
-                                yield Message::PairingRequestReceived(id, name, "phone".to_string());
+                                yield Message::PairingRequestReceived(id, name);
                             }
                             kdeconnect_dbus_client::ServiceEvent::ClipboardReceived(content) => {
                                 yield Message::ClipboardReceived(content);

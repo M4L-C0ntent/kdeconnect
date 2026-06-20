@@ -35,15 +35,11 @@ fn save_run_commands(commands: &[LocalCommand]) {
     if let Some(cfg) = run_commands_config() {
         let _ = cfg.set(RUN_COMMANDS_CONFIG_KEY, commands);
     }
-    let config_home = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
-        dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-            .join(".config")
-            .to_string_lossy()
-            .to_string()
-    });
-    let path = std::path::PathBuf::from(config_home)
-        .join("kdeconnect")
+    // dirs::config_dir() already reads XDG_CONFIG_HOME (sandboxed under Flatpak)
+    // and falls back to ~/.config outside it.
+    let path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(kdeconnect_core::config::CONFIG_DIR)
         .join("runcommand.json");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -193,6 +189,7 @@ pub enum Message {
 
 pub struct SettingsApp {
     core: Core,
+    accent_color: cosmic::iced::Color,
     active_tab: Tab,
     devices: Vec<Device>,
     selected_device: Option<String>,
@@ -231,6 +228,13 @@ impl SettingsApp {
             |(did, disabled)| Action::App(Message::PluginStatesLoaded(did, disabled)),
         )
     }
+
+    fn refresh_devices_task() -> Task<Action<Message>> {
+        Task::perform(
+            async { backend::fetch_devices().await },
+            |devices| Action::App(Message::DevicesLoaded(devices)),
+        )
+    }
 }
 
 impl Application for SettingsApp {
@@ -250,6 +254,8 @@ impl Application for SettingsApp {
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Action<Self::Message>>) {
         let mut app = Self {
             core,
+            accent_color: cosmic_ext_connect_applet::theme::try_load_cosmic_accent()
+               .unwrap_or(cosmic_ext_connect_applet::theme::FALLBACK_TEAL),
             active_tab: Tab::PairedDevices,
             devices: Vec::new(),
             selected_device: None,
@@ -341,10 +347,7 @@ impl Application for SettingsApp {
                 let trigger_broadcast = tab == Tab::AvailableDevices;
                 self.active_tab = tab;
                 if trigger_broadcast {
-                    return Task::perform(
-                        async { backend::fetch_devices().await },
-                        |devices| Action::App(Message::DevicesLoaded(devices)),
-                    );
+                    return Self::refresh_devices_task();
                 }
             }
 
@@ -383,10 +386,7 @@ impl Application for SettingsApp {
             }
 
             Message::Refresh => {
-                return Task::perform(
-                    async { backend::fetch_devices().await },
-                    |devices| Action::App(Message::DevicesLoaded(devices)),
-                );
+                return Self::refresh_devices_task();
             }
 
             Message::PairDevice(device_id) => {
@@ -428,10 +428,7 @@ impl Application for SettingsApp {
                         | kdeconnect_dbus_client::ServiceEvent::DevicePaired(..)
                 );
                 if needs_refresh {
-                    return Task::perform(
-                        async { backend::fetch_devices().await },
-                        |devices| Action::App(Message::DevicesLoaded(devices)),
-                    );
+                    return Self::refresh_devices_task();
                 }
             }
             Message::RunCommandsLoaded(cmds) => {
@@ -448,7 +445,7 @@ impl Application for SettingsApp {
                 let cmd = self.new_cmd_command.trim().to_string();
                 if !name.is_empty() && !cmd.is_empty() {
                     self.run_commands.push(serde_json::json!({
-                        "id": uuid_v4(),
+                        "id": uuid::Uuid::new_v4().to_string(),
                         "name": name,
                         "command": cmd,
                     }));
@@ -514,6 +511,7 @@ impl SettingsApp {
         } else {
             widget::button::text(fl!("settings-tab-paired"))
                 .on_press(Message::SelectTab(Tab::PairedDevices))
+                .class(cosmic_ext_connect_applet::theme::accent_link_button(self.accent_color))
         };
 
         let available_btn = if self.active_tab == Tab::AvailableDevices {
@@ -522,6 +520,7 @@ impl SettingsApp {
         } else {
             widget::button::text(fl!("settings-tab-available"))
                 .on_press(Message::SelectTab(Tab::AvailableDevices))
+                .class(cosmic_ext_connect_applet::theme::accent_link_button(self.accent_color))
         };
 
         widget::Row::new()
@@ -573,7 +572,7 @@ impl SettingsApp {
                 let item = widget::Row::new()
                     .spacing(spacing.space_s)
                     .align_y(Alignment::Center)
-                    .push(widget::icon::from_name(device.device_icon()).size(20))
+                    .push(widget::icon(cosmic_ext_connect_applet::theme::accent_icon(device.device_icon(), self.accent_color)).size(20))
                     .push(
                         widget::Column::new()
                             .spacing(2)
@@ -588,18 +587,21 @@ impl SettingsApp {
                             )
                             .width(Length::Fill),
                     )
-                    .push(widget::icon::from_name(status_icon).size(14));
+                    .push(widget::icon(cosmic_ext_connect_applet::theme::accent_icon(status_icon, self.accent_color)).size(14));
 
+                let accent = self.accent_color;
                 let btn = widget::button::custom(item)
                     .class(cosmic::theme::Button::Custom {
-                        active: Box::new(|focused, theme| {
+                        active: Box::new(move |focused, theme| {
                             let mut s = theme.active(focused, false, &cosmic::theme::Button::Text);
                             s.border_radius = cosmic::iced::Radius::from(0.0);
+                            s.text_color = Some(accent);
                             s
                         }),
-                        hovered: Box::new(|focused, theme| {
+                        hovered: Box::new(move |focused, theme| {
                             let mut s = theme.hovered(focused, false, &cosmic::theme::Button::Text);
                             s.border_radius = cosmic::iced::Radius::from(0.0);
+                            s.text_color = Some(accent);
                             s
                         }),
                         disabled: Box::new(|theme| {
@@ -607,9 +609,10 @@ impl SettingsApp {
                             s.border_radius = cosmic::iced::Radius::from(0.0);
                             s
                         }),
-                        pressed: Box::new(|focused, theme| {
+                        pressed: Box::new(move |focused, theme| {
                             let mut s = theme.pressed(focused, false, &cosmic::theme::Button::Text);
                             s.border_radius = cosmic::iced::Radius::from(0.0);
+                            s.text_color = Some(accent);
                             s
                         }),
                     })
@@ -804,6 +807,7 @@ impl SettingsApp {
                     } else {
                         widget::button::suggested(fl!("available-devices-pair"))
                             .on_press(Message::PairDevice(device_id))
+                            .class(cosmic_ext_connect_applet::theme::accent_filled_button(self.accent_color))
                     });
 
                 col = col.push(
@@ -876,7 +880,8 @@ impl SettingsApp {
         );
         col = col.push(
             widget::button::suggested(fl!("run-commands-add-button"))
-                .on_press(Message::AddRunCommand),
+                .on_press(Message::AddRunCommand)
+                .class(cosmic_ext_connect_applet::theme::accent_filled_button(self.accent_color)),
         );
 
         widget::container(col)
@@ -885,23 +890,6 @@ impl SettingsApp {
             .width(Length::Fill)
             .into()
     }
-}
-
-/// Simple UUID v4 generator (no external crate needed).
-fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        t,
-        t >> 16,
-        t & 0xfff,
-        0x8000 | (t & 0x3fff),
-        t as u64 * 0xdeadbeef,
-    )
 }
 
 fn main() -> cosmic::iced::Result {

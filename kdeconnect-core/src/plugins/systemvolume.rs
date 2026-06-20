@@ -57,12 +57,10 @@ pub struct SystemVolumeRequest {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-#[allow(dead_code)]
 enum PaMessage {
     GetSinks,
     SetSinkVolume(String, u32),
     SetSinkMute(String, bool),
-    Quit,
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +87,7 @@ static PA_CONNECTIONS: std::sync::LazyLock<Mutex<std::collections::HashMap<Strin
 // ---------------------------------------------------------------------------
 
 impl SystemVolumeRequest {
-    pub async fn handle(&self, device: &Device, _core_tx: mpsc::UnboundedSender<CoreEvent>) {
+    pub async fn handle(&self, device: &Device) {
         info!("[systemvolume] handle called: request_sinks={:?} name={:?} volume={:?} muted={:?}",
             self.request_sinks, self.name, self.volume, self.muted);
         let conn = {
@@ -278,12 +276,6 @@ fn pa_thread(
             }
 
             match rx.try_recv() {
-                Ok(PaMessage::Quit) => {
-                    info!("[systemvolume] PA thread quitting for {}", device_id.0);
-                    context.disconnect();
-                    mainloop.stop();
-                    return;
-                }
                 Ok(PaMessage::GetSinks) => {
                     // Drain duplicate GetSinks — only respond once.
                     while matches!(rx.try_recv(), Ok(PaMessage::GetSinks)) {}
@@ -328,6 +320,27 @@ fn pa_thread(
 // PA operations
 // ---------------------------------------------------------------------------
 
+/// Polls a PulseAudio operation until it completes or `timeout_secs` elapses.
+/// The threaded mainloop's lock must be held by the caller before calling this
+/// and is held again on return; the loop releases it between checks so PA's
+/// background thread can make progress. Returns false on timeout.
+fn wait_for_operation<T: ?Sized>(
+    mainloop: &mut Mainloop,
+    op: &libpulse_binding::operation::Operation<T>,
+    timeout_secs: u64,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    while op.get_state() == libpulse_binding::operation::State::Running {
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+        mainloop.unlock();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        mainloop.lock();
+    }
+    true
+}
+
 fn enumerate_sinks(mainloop: &mut Mainloop, context: &Context) -> Option<Vec<SinkInfo>> {
     // First get the default sink name.
     let default_sink: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -341,15 +354,8 @@ fn enumerate_sinks(mainloop: &mut Mainloop, context: &Context) -> Option<Vec<Sin
             .map(|s| s.to_string());
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while op.get_state() == libpulse_binding::operation::State::Running {
-        if std::time::Instant::now() > deadline {
-            warn!("[systemvolume] get_server_info timed out");
-            break;
-        }
-        mainloop.unlock();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        mainloop.lock();
+    if !wait_for_operation(mainloop, &op, 3) {
+        warn!("[systemvolume] get_server_info timed out");
     }
     mainloop.unlock();
 
@@ -370,16 +376,10 @@ fn enumerate_sinks(mainloop: &mut Mainloop, context: &Context) -> Option<Vec<Sin
         }
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while op.get_state() == libpulse_binding::operation::State::Running {
-        if std::time::Instant::now() > deadline {
-            warn!("[systemvolume] enumerate_sinks timed out");
-            mainloop.unlock();
-            return None;
-        }
+    if !wait_for_operation(mainloop, &op, 5) {
+        warn!("[systemvolume] enumerate_sinks timed out");
         mainloop.unlock();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        mainloop.lock();
+        return None;
     }
     mainloop.unlock();
 
@@ -398,26 +398,14 @@ fn set_volume(mainloop: &mut Mainloop, context: &Context, name: &str, volume: u3
         }
     });
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while op.get_state() == libpulse_binding::operation::State::Running {
-        if std::time::Instant::now() > deadline { break; }
-        mainloop.unlock();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        mainloop.lock();
-    }
+    wait_for_operation(mainloop, &op, 3);
 
     let ch = *channels.lock().unwrap();
     let mut cvol = ChannelVolumes::default();
     cvol.set(ch, Volume(volume));
 
     let op = introspect.set_sink_volume_by_name(name, &cvol, None::<Box<dyn FnMut(bool)>>);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while op.get_state() == libpulse_binding::operation::State::Running {
-        if std::time::Instant::now() > deadline { break; }
-        mainloop.unlock();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        mainloop.lock();
-    }
+    wait_for_operation(mainloop, &op, 3);
     mainloop.unlock();
 }
 
@@ -425,13 +413,7 @@ fn set_mute(mainloop: &mut Mainloop, context: &Context, name: &str, muted: bool)
     mainloop.lock();
     let mut introspect = context.introspect();
     let op = introspect.set_sink_mute_by_name(name, muted, None::<Box<dyn FnMut(bool)>>);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    while op.get_state() == libpulse_binding::operation::State::Running {
-        if std::time::Instant::now() > deadline { break; }
-        mainloop.unlock();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        mainloop.lock();
-    }
+    wait_for_operation(mainloop, &op, 3);
     mainloop.unlock();
 }
 
