@@ -490,15 +490,30 @@ fn view_message_input<'a>(
 /// Emoji picker panel: category tabs + a scrollable grid of emoji for the
 /// selected category. Stays open after inserting an emoji so multiple can
 /// be picked in a row.
+// cosmic-text's font fallback can resolve a handful of codepoints (✈️⚽💡❤️,
+// some smileys) to a non-color font that happens to also cover them, instead
+// of the color emoji font, which renders them as outlines tinted by the
+// button's text color. Pinning the glyph to the color emoji font avoids that.
+const EMOJI_FONT: cosmic::iced::Font = cosmic::iced::Font::with_name("Noto Color Emoji");
+
 fn view_emoji_picker<'a>(
     app: &'a SmsWindow,
     spacing: &cosmic::cosmic_theme::Spacing,
 ) -> Element<'a, SmsMessage> {
-    let mut tabs = widget::Row::new().spacing(spacing.space_xxs);
+    let mut tabs = widget::Row::new()
+        .spacing(spacing.space_xxs)
+        .width(Length::Fill);
     for category in EmojiCategory::all() {
         let is_active = app.emoji_category == category;
-        let tab = widget::button::text(category.label())
-            .on_press(SmsMessage::SelectEmojiCategory(category));
+        let tab = widget::button::custom(
+            widget::text(category.label())
+                .font(EMOJI_FONT)
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+        )
+        .padding(spacing.space_xxs)
+        .width(Length::Fill)
+        .on_press(SmsMessage::SelectEmojiCategory(category));
         tabs = tabs.push(if is_active {
             tab.class(cosmic::theme::Button::Suggested)
         } else {
@@ -508,11 +523,18 @@ fn view_emoji_picker<'a>(
 
     let mut grid = widget::Column::new().spacing(spacing.space_xxs);
     for row_emojis in app.emoji_category.emojis().chunks(8) {
-        let mut row = widget::Row::new().spacing(spacing.space_xxs);
+        let mut row = widget::Row::new().spacing(spacing.space_xxs).width(Length::Fill);
         for emoji in row_emojis {
             row = row.push(
-                widget::button::text(*emoji)
-                    .on_press(SmsMessage::InsertEmoji(emoji.to_string())),
+                widget::button::custom(
+                    widget::text(*emoji)
+                        .font(EMOJI_FONT)
+                        .width(Length::Fill)
+                        .align_x(Alignment::Center),
+                )
+                .padding(spacing.space_xxs)
+                .width(Length::Fill)
+                .on_press(SmsMessage::InsertEmoji(emoji.to_string())),
             );
         }
         grid = grid.push(row);
@@ -524,7 +546,11 @@ fn view_emoji_picker<'a>(
             .padding(spacing.space_s)
             .push(tabs)
             .push(widget::divider::horizontal::light())
-            .push(widget::scrollable(grid).height(Length::Fixed(160.0))),
+            .push(
+                widget::scrollable(grid.width(Length::Fill))
+                    .width(Length::Fill)
+                    .height(Length::Fixed(160.0)),
+            ),
     )
     .class(cosmic::theme::Container::Card)
     .width(Length::Fill)
