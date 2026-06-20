@@ -76,6 +76,49 @@ macro_rules! dbus_client {
     };
 }
 
+/// Builds a `Device`, preserving fields the phone doesn't report on every poll
+/// (battery, signal, transfer progress, run commands) from the existing cache
+/// entry, and updates the cache with the result.
+fn merge_device(
+    id: String,
+    name: String,
+    device_type: String,
+    is_paired: bool,
+    is_reachable: bool,
+    cache: &mut HashMap<String, Device>,
+) -> Device {
+    let existing = cache.get(&id).cloned();
+    let device = Device {
+        id: id.clone(),
+        name,
+        device_type,
+        is_paired,
+        is_reachable,
+        battery_level: existing.as_ref().and_then(|e| e.battery_level),
+        is_charging: existing.as_ref().and_then(|e| e.is_charging),
+        network_type: existing.as_ref().and_then(|e| e.network_type.clone()),
+        signal_strength: existing.as_ref().and_then(|e| e.signal_strength),
+        pairing_requests: 0,
+        has_battery: false,
+        has_ping: true,
+        has_sms: true,
+        has_contacts: false,
+        has_clipboard: true,
+        has_findmyphone: true,
+        has_share: true,
+        share_progress: existing.as_ref().and_then(|e| e.share_progress),
+        has_sftp: false,
+        has_mpris: false,
+        has_remote_keyboard: false,
+        has_presenter: false,
+        has_lockdevice: false,
+        has_virtualmonitor: false,
+        run_commands: existing.as_ref().map(|e| e.run_commands.clone()).unwrap_or_default(),
+    };
+    cache.insert(id, device.clone());
+    device
+}
+
 pub async fn fetch_devices() -> Vec<Device> {
     if let Some(Ok(reply)) = via_varlink(|c| async move {
         use kdeconnect_varlink::iface::VarlinkClientInterface;
@@ -84,38 +127,11 @@ pub async fn fetch_devices() -> Vec<Device> {
     .await
     {
         let mut cache = DEVICE_CACHE.lock().await;
-        let devices: Vec<Device> = reply.devices.into_iter().map(|d| {
-            let existing = cache.get(&d.id).cloned();
-            let device = Device {
-                id: d.id.clone(),
-                name: d.name.clone(),
-                device_type: d.device_type.clone(),
-                is_paired: d.is_paired,
-                is_reachable: d.is_reachable,
-                battery_level: existing.as_ref().and_then(|e| e.battery_level),
-                is_charging: existing.as_ref().and_then(|e| e.is_charging),
-                network_type: existing.as_ref().and_then(|e| e.network_type.clone()),
-                signal_strength: existing.as_ref().and_then(|e| e.signal_strength),
-                pairing_requests: 0,
-                has_battery: false,
-                has_ping: true,
-                has_sms: true,
-                has_contacts: false,
-                has_clipboard: true,
-                has_findmyphone: true,
-                has_share: true,
-                share_progress: existing.as_ref().and_then(|e| e.share_progress),
-                has_sftp: false,
-                has_mpris: false,
-                has_remote_keyboard: false,
-                has_presenter: false,
-                has_lockdevice: false,
-                has_virtualmonitor: false,
-                run_commands: existing.as_ref().map(|e| e.run_commands.clone()).unwrap_or_default(),
-            };
-            cache.insert(d.id.clone(), device.clone());
-            device
-        }).collect();
+        let devices: Vec<Device> = reply
+            .devices
+            .into_iter()
+            .map(|d| merge_device(d.id, d.name, d.device_type, d.is_paired, d.is_reachable, &mut cache))
+            .collect();
         return devices;
     }
 
@@ -128,38 +144,10 @@ pub async fn fetch_devices() -> Vec<Device> {
     match client.list_devices().await {
         Ok(dbus_devices) => {
             let mut cache = DEVICE_CACHE.lock().await;
-            dbus_devices.into_iter().map(|d| {
-                let existing = cache.get(&d.id).cloned();
-                let device = Device {
-                    id: d.id.clone(),
-                    name: d.name.clone(),
-                    device_type: "phone".to_string(),
-                    is_paired: d.is_paired,
-                    is_reachable: d.is_reachable,
-                    battery_level: existing.as_ref().and_then(|e| e.battery_level),
-                    is_charging: existing.as_ref().and_then(|e| e.is_charging),
-                    network_type: existing.as_ref().and_then(|e| e.network_type.clone()),
-                    signal_strength: existing.as_ref().and_then(|e| e.signal_strength),
-                    pairing_requests: 0,
-                    has_battery: false,
-                    has_ping: true,
-                    has_sms: true,
-                    has_contacts: false,
-                    has_clipboard: true,
-                    has_findmyphone: true,
-                    has_share: true,
-                    share_progress: existing.as_ref().and_then(|e| e.share_progress),
-                    has_sftp: false,
-                    has_mpris: false,
-                    has_remote_keyboard: false,
-                    has_presenter: false,
-                    has_lockdevice: false,
-                    has_virtualmonitor: false,
-                    run_commands: existing.as_ref().map(|e| e.run_commands.clone()).unwrap_or_default(),
-                };
-                cache.insert(d.id.clone(), device.clone());
-                device
-            }).collect()
+            dbus_devices
+                .into_iter()
+                .map(|d| merge_device(d.id, d.name, "phone".to_string(), d.is_paired, d.is_reachable, &mut cache))
+                .collect()
         }
         Err(e) => {
             error!("Failed to fetch devices: {:?}", e);
@@ -170,11 +158,6 @@ pub async fn fetch_devices() -> Vec<Device> {
 
 pub async fn update_device(device_id: String, device: Device) {
     DEVICE_CACHE.lock().await.insert(device_id, device);
-}
-
-#[allow(dead_code)]
-pub async fn remove_device(device_id: &str) {
-    DEVICE_CACHE.lock().await.remove(device_id);
 }
 
 pub async fn pair_device(device_id: String) -> Result<()> {
@@ -273,7 +256,6 @@ pub async fn ring_device(device_id: String) -> Result<()> {
     dbus_client!(g).ring_device(&device_id).await
 }
 
-#[allow(dead_code)]
 pub async fn set_plugin_enabled(device_id: String, plugin_id: String, enabled: bool) -> Result<()> {
     if let Some(r) = via_varlink(|c| {
         let id = device_id.clone();
@@ -287,7 +269,6 @@ pub async fn set_plugin_enabled(device_id: String, plugin_id: String, enabled: b
     dbus_client!(g).set_plugin_enabled(&device_id, &plugin_id, enabled).await
 }
 
-#[allow(dead_code)]
 pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
     let g = CLIENT.lock().await;
     let Some(client) = g.as_ref() else {
@@ -303,28 +284,9 @@ pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
     }
 }
 
-#[allow(dead_code)]
 pub async fn broadcast_identity() -> Result<()> {
     let g = CLIENT.lock().await;
     dbus_client!(g).broadcast_identity().await
-}
-
-#[allow(dead_code)]
-pub async fn request_conversations(device_id: String) -> Result<()> {
-    let g = CLIENT.lock().await;
-    dbus_client!(g).request_conversations(&device_id).await
-}
-
-#[allow(dead_code)]
-pub async fn request_conversation(device_id: String, thread_id: i64) -> Result<()> {
-    let g = CLIENT.lock().await;
-    dbus_client!(g).request_conversation(&device_id, thread_id).await
-}
-
-#[allow(dead_code)]
-pub async fn send_sms(device_id: String, phone_number: String, message: String) -> Result<()> {
-    let g = CLIENT.lock().await;
-    dbus_client!(g).send_sms(&device_id, &phone_number, &message).await
 }
 
 pub async fn request_run_commands(device_id: String) -> Result<()> {
@@ -356,7 +318,6 @@ pub async fn push_local_commands(device_id: String) {
 
 /// Stream of service events. Reconnects automatically when the client is
 /// replaced (e.g. after session logout/login) or the stream ends.
-#[allow(dead_code)]
 pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent> {
     use tokio::sync::mpsc;
     use tokio::time::{Duration, sleep};
@@ -461,7 +422,6 @@ pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> 
     })
 }
 
-#[allow(dead_code)]
 pub fn filetransfer_subscription() -> Subscription<crate::messages::Message> {
     struct Worker;
 

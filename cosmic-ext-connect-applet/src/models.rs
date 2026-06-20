@@ -42,8 +42,7 @@ impl Device {
         match self.device_type.as_str() {
             "phone" => "phone-symbolic",
             "tablet" => "tablet-symbolic",
-            "desktop" => "computer-symbolic",
-            "laptop" => "computer-symbolic",
+            "desktop" | "laptop" => "computer-symbolic",
             _ => "phone-symbolic",
         }
     }

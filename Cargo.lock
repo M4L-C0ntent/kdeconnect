@@ -1071,6 +1071,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "urlencoding",
+ "uuid",
  "varlink",
  "zbus",
 ]

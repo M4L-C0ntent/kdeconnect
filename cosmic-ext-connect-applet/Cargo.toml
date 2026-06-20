@@ -28,6 +28,7 @@ async-stream = { workspace = true }
 anyhow = { workspace = true }
 percent-encoding = { workspace = true }
 notify-rust = { workspace = true }
+uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 zbus = { workspace = true }

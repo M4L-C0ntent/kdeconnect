@@ -222,14 +222,10 @@ impl DaemonInterface {
 
     /// Return the list of disabled plugin IDs for a device.
     async fn get_disabled_plugins(&self, device_id: String) -> Vec<String> {
-        let path = dirs::config_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("~/.config"))
-            .join(kdeconnect_core::config::CONFIG_DIR)
-            .join(format!("{}_plugins.json", device_id));
-        match tokio::fs::read_to_string(&path).await {
-            Ok(json) => serde_json::from_str::<Vec<String>>(&json).unwrap_or_default(),
-            Err(_) => vec![],
-        }
+        kdeconnect_core::plugin_config::load_disabled_plugins(&device_id)
+            .await
+            .into_iter()
+            .collect()
     }
 
     /// Trigger a UDP identity broadcast to discover nearby devices.

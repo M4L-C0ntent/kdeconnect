@@ -34,11 +34,7 @@ macro_rules! fl {
 pub mod backend;
 pub mod messages;
 pub mod models;
-pub mod notifications;
 pub mod plugins;
 pub mod portal;
 pub mod ui;
 pub mod theme;
-
-// Re-export commonly used types
-pub use notifications::{PairingNotification, start_notification_listener};

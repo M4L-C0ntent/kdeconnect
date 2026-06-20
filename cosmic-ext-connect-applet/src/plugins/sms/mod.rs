@@ -1,7 +1,6 @@
 // #[allow(dead_code)] = Placeholder for code that will be used once features are fully integrated
 
 mod emoji;
-mod messages;
 mod utils;
 mod views;
 

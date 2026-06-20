@@ -242,11 +242,11 @@ fn create_device_card<'a>(
                         .width(Length::Fill)
                         .class(theme::accent_link_button(accent_color)),
                 );
-                menu_items = menu_items.push_maybe(if let Some(progress) = device.share_progress {
-                    Some(widget::progress_bar::determinate_linear(progress as f32 / 100.0))
-                } else {
-                    None
-                });
+                menu_items = menu_items.push_maybe(
+                    device.share_progress.map(|progress| {
+                        widget::progress_bar::determinate_linear(progress as f32 / 100.0)
+                    }),
+                );
             }
 
             if device.has_sftp {

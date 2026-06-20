@@ -109,9 +109,10 @@ impl VarlinkInterface for KdeConnectVarlinkService {
 
     async fn get_plugin_enabled(
         &self, call: &mut dyn Call_GetPluginEnabled,
-        _device_id: String, _plugin: String,
+        device_id: String, plugin: String,
     ) -> varlink::Result<()> {
-        call.reply(true)
+        let disabled = kdeconnect_core::plugin_config::load_disabled_plugins(&device_id).await;
+        call.reply(!disabled.contains(&plugin))
     }
 
     async fn accept_pairing(&self, call: &mut dyn Call_AcceptPairing, device_id: String) -> varlink::Result<()> {

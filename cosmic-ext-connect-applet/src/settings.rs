@@ -35,15 +35,11 @@ fn save_run_commands(commands: &[LocalCommand]) {
     if let Some(cfg) = run_commands_config() {
         let _ = cfg.set(RUN_COMMANDS_CONFIG_KEY, commands);
     }
-    let config_home = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
-        dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-            .join(".config")
-            .to_string_lossy()
-            .to_string()
-    });
-    let path = std::path::PathBuf::from(config_home)
-        .join("kdeconnect")
+    // dirs::config_dir() already reads XDG_CONFIG_HOME (sandboxed under Flatpak)
+    // and falls back to ~/.config outside it.
+    let path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(kdeconnect_core::config::CONFIG_DIR)
         .join("runcommand.json");
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -232,6 +228,13 @@ impl SettingsApp {
             |(did, disabled)| Action::App(Message::PluginStatesLoaded(did, disabled)),
         )
     }
+
+    fn refresh_devices_task() -> Task<Action<Message>> {
+        Task::perform(
+            async { backend::fetch_devices().await },
+            |devices| Action::App(Message::DevicesLoaded(devices)),
+        )
+    }
 }
 
 impl Application for SettingsApp {
@@ -344,10 +347,7 @@ impl Application for SettingsApp {
                 let trigger_broadcast = tab == Tab::AvailableDevices;
                 self.active_tab = tab;
                 if trigger_broadcast {
-                    return Task::perform(
-                        async { backend::fetch_devices().await },
-                        |devices| Action::App(Message::DevicesLoaded(devices)),
-                    );
+                    return Self::refresh_devices_task();
                 }
             }
 
@@ -386,10 +386,7 @@ impl Application for SettingsApp {
             }
 
             Message::Refresh => {
-                return Task::perform(
-                    async { backend::fetch_devices().await },
-                    |devices| Action::App(Message::DevicesLoaded(devices)),
-                );
+                return Self::refresh_devices_task();
             }
 
             Message::PairDevice(device_id) => {
@@ -431,10 +428,7 @@ impl Application for SettingsApp {
                         | kdeconnect_dbus_client::ServiceEvent::DevicePaired(..)
                 );
                 if needs_refresh {
-                    return Task::perform(
-                        async { backend::fetch_devices().await },
-                        |devices| Action::App(Message::DevicesLoaded(devices)),
-                    );
+                    return Self::refresh_devices_task();
                 }
             }
             Message::RunCommandsLoaded(cmds) => {
@@ -451,7 +445,7 @@ impl Application for SettingsApp {
                 let cmd = self.new_cmd_command.trim().to_string();
                 if !name.is_empty() && !cmd.is_empty() {
                     self.run_commands.push(serde_json::json!({
-                        "id": uuid_v4(),
+                        "id": uuid::Uuid::new_v4().to_string(),
                         "name": name,
                         "command": cmd,
                     }));
@@ -896,23 +890,6 @@ impl SettingsApp {
             .width(Length::Fill)
             .into()
     }
-}
-
-/// Simple UUID v4 generator (no external crate needed).
-fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        t,
-        t >> 16,
-        t & 0xfff,
-        0x8000 | (t & 0x3fff),
-        t as u64 * 0xdeadbeef,
-    )
 }
 
 fn main() -> cosmic::iced::Result {

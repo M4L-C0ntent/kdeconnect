@@ -14,7 +14,7 @@ pub struct Conversation {
     pub phone_number: String,
     pub last_message: String,
     pub timestamp: i64,
-    #[allow(dead_code)] // Used for future read/unread tracking
+    /// Used for future read/unread tracking
     pub unread: bool,
 }
 
@@ -28,7 +28,7 @@ pub struct Message {
     pub date: i64,
     /// Message type: 1 = received, 2 = sent
     pub type_: i32,
-    #[allow(dead_code)] // Used for future read receipt tracking
+    /// Used for future read receipt tracking
     pub read: bool,
 }
 
@@ -45,7 +45,7 @@ impl Message {
 pub enum ProtocolEvent {
     MessageReceived(Message),
     ConversationsReceived(Vec<Conversation>),
-    #[allow(dead_code)] // Used for error handling in event processing
+    /// Used for error handling in event processing
     Error(String),
 }
 
