@@ -111,6 +111,12 @@ sms-new-chat-showing = Showing { $count } contact{ $count ->
     *[other] s
 }
 
+# SMS delete confirmation dialog
+sms-delete-confirm-title = Delete conversation?
+sms-delete-confirm-body = This removes the conversation with { $name } from this device only — it will not be deleted from your phone, and new messages on this conversation will also be hidden going forward.
+sms-delete-confirm-action = Delete
+sms-delete-confirm-cancel = Cancel
+
 # Emoji categories
 emoji-smileys = Smileys
 emoji-people = People

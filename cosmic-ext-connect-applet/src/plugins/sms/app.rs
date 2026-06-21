@@ -42,6 +42,15 @@ pub enum SmsMessage {
     ToggleEmojiPicker,
     SelectEmojiCategory(EmojiCategory),
     InsertEmoji(String),
+
+    /// Opens the confirmation dialog for deleting (hiding) a conversation.
+    RequestDeleteConversation(String),
+    /// Closes the confirmation dialog without deleting anything.
+    CancelDeleteConversation,
+    /// Hides the pending conversation from this device's view going
+    /// forward. Local-only — the SMS protocol has no delete packet, so
+    /// this never touches the phone's actual messages or conversation.
+    ConfirmDeleteConversation,
 }
 
 pub struct SmsWindow {
@@ -60,6 +69,10 @@ pub struct SmsWindow {
     pub new_chat_phone_input: String,
     pub show_emoji_picker: bool,
     pub emoji_category: EmojiCategory,
+    /// Thread IDs hidden via the delete flow — see hidden_conversations docs.
+    pub hidden_conversations: std::collections::HashSet<String>,
+    /// Thread ID pending delete confirmation, if the dialog is open.
+    pub pending_delete_thread: Option<String>,
 }
 
 impl Application for SmsWindow {
@@ -95,6 +108,8 @@ impl Application for SmsWindow {
             new_chat_phone_input: String::new(),
             show_emoji_picker: false,
             emoji_category: EmojiCategory::Smileys,
+            hidden_conversations: kdeconnect_core::hidden_conversations::load_hidden(&device_id),
+            pending_delete_thread: None,
         };
 
         let title = fl!("sms-window-title", device = device_name.as_str());
@@ -327,8 +342,38 @@ impl Application for SmsWindow {
             SmsMessage::InsertEmoji(emoji) => {
                 self.message_input.push_str(&emoji);
             }
+            SmsMessage::RequestDeleteConversation(thread_id) => {
+                self.pending_delete_thread = Some(thread_id);
+            }
+            SmsMessage::CancelDeleteConversation => {
+                self.pending_delete_thread = None;
+            }
+            SmsMessage::ConfirmDeleteConversation => {
+                let Some(thread_id) = self.pending_delete_thread.take() else {
+                    return Task::none();
+                };
+
+                self.conversations.retain(|c| c.thread_id != thread_id);
+                self.hidden_conversations.insert(thread_id.clone());
+
+                if self.selected_thread.as_deref() == Some(thread_id.as_str()) {
+                    self.selected_thread = None;
+                    self.messages.clear();
+                }
+
+                let device_id = self.device_id.clone();
+                let hidden = self.hidden_conversations.clone();
+                return cosmic::task::future(async move {
+                    kdeconnect_core::hidden_conversations::save_hidden(&device_id, &hidden).await;
+                    Action::None
+                });
+            }
         }
         Task::none()
+    }
+
+    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        self.pending_delete_thread.as_ref().map(|_| self.delete_confirm_dialog())
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -345,6 +390,35 @@ impl Application for SmsWindow {
 }
 
 impl SmsWindow {
+    /// Builds the delete-confirmation dialog shown via `Application::dialog()`.
+    fn delete_confirm_dialog(&self) -> Element<'_, SmsMessage> {
+        let display_name = self
+            .pending_delete_thread
+            .as_ref()
+            .and_then(|tid| self.conversations.iter().find(|c| &c.thread_id == tid))
+            .map(|c| {
+                self.contacts
+                    .iter()
+                    .find(|(phone, _)| utils::phone_numbers_match(&c.phone_number, phone))
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or_else(|| c.phone_number.clone())
+            })
+            .unwrap_or_default();
+
+        widget::dialog()
+            .title(fl!("sms-delete-confirm-title"))
+            .body(fl!("sms-delete-confirm-body", name = display_name.as_str()))
+            .primary_action(
+                widget::button::destructive(fl!("sms-delete-confirm-action"))
+                    .on_press(SmsMessage::ConfirmDeleteConversation),
+            )
+            .secondary_action(
+                widget::button::standard(fl!("sms-delete-confirm-cancel"))
+                    .on_press(SmsMessage::CancelDeleteConversation),
+            )
+            .into()
+    }
+
     fn handle_protocol_event(&mut self, event: ProtocolEvent) {
         match event {
             ProtocolEvent::ConversationsReceived(conversations) => {
@@ -392,6 +466,7 @@ impl SmsWindow {
                 });
 
                 self.conversations = merged;
+                self.conversations.retain(|c| !self.hidden_conversations.contains(&c.thread_id));
                 self.update_conversation_names();
 
                 // If we had a new_* selected, find its real thread by phone number now
@@ -406,6 +481,11 @@ impl SmsWindow {
             }
             ProtocolEvent::MessageReceived(message) => {
                 debug!("MessageReceived thread={}", message.thread_id);
+
+                if self.hidden_conversations.contains(&message.thread_id) {
+                    return;
+                }
+
                 let is_selected = self.selected_thread.as_deref() == Some(&message.thread_id);
 
                 if is_selected {

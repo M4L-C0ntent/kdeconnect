@@ -21,6 +21,7 @@ use crate::{
 
 pub mod config;
 pub mod plugin_config;
+pub mod hidden_conversations;
 pub(crate) mod crypto;
 pub mod device;
 pub mod event;

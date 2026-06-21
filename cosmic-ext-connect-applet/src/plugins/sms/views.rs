@@ -354,13 +354,23 @@ fn view_conversation_item<'a>(
     .on_press(SmsMessage::SelectThread(conv.thread_id.clone()))
     .width(Length::Fill);
 
-    if is_selected {
+    let row_content = if is_selected {
         widget::container(button)
             .class(cosmic::theme::Container::Primary)
             .into()
     } else {
-        button.into()
-    }
+        Element::from(button)
+    };
+
+    let delete_button = widget::button::icon(widget::icon::from_name("user-trash-symbolic").handle())
+        .on_press(SmsMessage::RequestDeleteConversation(conv.thread_id.clone()));
+
+    widget::Row::new()
+        .push(row_content)
+        .push(delete_button)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .into()
 }
 
 /// Thread panel (messages + input)
