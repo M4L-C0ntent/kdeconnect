@@ -66,7 +66,7 @@ async fn save_contacts_cache(device_id: &str, contacts: &HashMap<String, String>
     }
 }
 
-async fn load_contacts_cache(device_id: &str) -> Option<HashMap<String, String>> {
+pub(crate) async fn load_contacts_cache(device_id: &str) -> Option<HashMap<String, String>> {
     let path = device_cache_dir(device_id).join("contacts_cache.json");
     match tokio::fs::read_to_string(&path).await {
         Ok(json) => match serde_json::from_str(&json) {
@@ -104,7 +104,7 @@ async fn save_sms_cache(device_id: &str, messages_json: &str) {
     }
 }
 
-async fn load_sms_cache(device_id: &str) -> Option<String> {
+pub(crate) async fn load_sms_cache(device_id: &str) -> Option<String> {
     let path = device_cache_dir(device_id).join("sms_cache.json");
     match tokio::fs::read_to_string(&path).await {
         Ok(json) if !json.is_empty() => {
@@ -497,6 +497,7 @@ pub struct KdeConnectService {
     connection: Connection,
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     devices: Arc<Mutex<HashMap<String, DbusDevice>>>,
+    sms_cache: Arc<Mutex<Option<String>>>,
 }
 
 impl KdeConnectService {
@@ -515,9 +516,10 @@ impl KdeConnectService {
     ) {
         let event_sender = self.event_sender.clone();
         let devices = self.devices.clone();
+        let sms_cache = self.sms_cache.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                crate::varlink_server::run_varlink_server(event_sender, devices, broadcast_tx)
+                crate::varlink_server::run_varlink_server(event_sender, devices, sms_cache, broadcast_tx)
                     .await
             {
                 warn!("Varlink server exited: {:?}", e);
@@ -552,7 +554,9 @@ impl KdeConnectService {
     }
 }
 impl KdeConnectService {
-    pub async fn new() -> Result<Self> {
+    pub async fn new(
+        broadcast_tx: broadcast::Sender<crate::varlink_server::VarlinkEvent>,
+    ) -> Result<Self> {
         info!("Initializing KDE Connect D-Bus service");
 
         let connection = Connection::session().await?;
@@ -637,6 +641,8 @@ impl KdeConnectService {
         let conn_clone = connection.clone();
         let devices_clone = devices.clone();
         let event_sender_clone = event_sender.clone();
+        let broadcast_tx_clone = broadcast_tx.clone();
+        let sms_cache_for_service = sms_cache.clone();
 
         tokio::spawn(async move {
             debug!("Event handler started");
@@ -648,6 +654,7 @@ impl KdeConnectService {
                     &event_sender_clone,
                     &sms_cache,
                     &current_device_id,
+                    &broadcast_tx_clone,
                 )
                 .await
                 {
@@ -672,9 +679,13 @@ impl KdeConnectService {
             connection,
             event_sender,
             devices,
+            sms_cache: sms_cache_for_service,
         })
     }
 
+    // broadcast_tx: dormant — see DORMANT note on VarlinkEvent / subscribe()
+    // in varlink_server.rs. The .send() calls below are cheap no-ops until
+    // that's resolved.
     async fn handle_event(
         connection: &Connection,
         event: ConnectionEvent,
@@ -682,6 +693,7 @@ impl KdeConnectService {
         event_sender: &Arc<mpsc::UnboundedSender<AppEvent>>,
         sms_cache: &Arc<Mutex<Option<String>>>,
         current_device_id: &Arc<Mutex<Option<String>>>,
+        broadcast_tx: &broadcast::Sender<crate::varlink_server::VarlinkEvent>,
     ) -> Result<()> {
         match event {
             ConnectionEvent::Connected((device_id, device)) => {
@@ -715,6 +727,13 @@ impl KdeConnectService {
                 )
                 .await?;
                 debug!("Device connected signal emitted");
+
+                let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                    event_type: "device_connected".into(),
+                    device_id: device_id.0.clone(),
+                    device: devices.lock().await.get(&device_id.0).cloned(),
+                    ..Default::default()
+                });
 
                 if is_paired {
                     let did = device_id.0.clone();
@@ -779,6 +798,13 @@ impl KdeConnectService {
                 .await?;
                 debug!("Device paired signal emitted");
 
+                let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                    event_type: "device_paired".into(),
+                    device_id: device_id.0.clone(),
+                    device: devices.lock().await.get(&device_id.0).cloned(),
+                    ..Default::default()
+                });
+
                 let sender = event_sender.clone();
                 let did = device_id.0.clone();
                 tokio::spawn(async move {
@@ -819,9 +845,15 @@ impl KdeConnectService {
                     .interface::<_, DaemonInterface>(DAEMON_PATH)
                     .await?;
 
-                DaemonInterface::device_disconnected(iface_ref.signal_emitter(), device_id.0)
+                DaemonInterface::device_disconnected(iface_ref.signal_emitter(), device_id.0.clone())
                     .await?;
                 debug!("Device disconnected signal emitted");
+
+                let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                    event_type: "device_disconnected".into(),
+                    device_id: device_id.0,
+                    ..Default::default()
+                });
             }
             ConnectionEvent::PairStateChanged((device_id, pair_state)) => {
                 info!("Event: PairStateChanged - {} → {:?}", device_id.0, pair_state);
@@ -844,9 +876,16 @@ impl KdeConnectService {
                     DaemonInterface::device_connected(
                         iface_ref.signal_emitter(),
                         device_id.0.clone(),
-                        dev,
+                        dev.clone(),
                     )
                     .await?;
+
+                    let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                        event_type: "device_connected".into(),
+                        device_id: device_id.0.clone(),
+                        device: Some(dev),
+                        ..Default::default()
+                    });
                 }
                 debug!("PairStateChanged signal emitted for {}", device_id.0);
             }
@@ -920,6 +959,13 @@ impl KdeConnectService {
                 )
                 .await?;
 
+                let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                    event_type: "pairing_requested".into(),
+                    device_id: device_id.0,
+                    message: Some(device_name),
+                    ..Default::default()
+                });
+
                 // The D-Bus signal is the primary mechanism — the applet
                 // subscription delivers it immediately and opens the popup.
             }
@@ -930,9 +976,16 @@ impl KdeConnectService {
                     .object_server()
                     .interface::<_, DaemonInterface>(DAEMON_PATH)
                     .await?;
-                DaemonInterface::clipboard_received(iface_ref.signal_emitter(), content)
+                DaemonInterface::clipboard_received(iface_ref.signal_emitter(), content.clone())
                     .await?;
                 debug!("ClipboardReceived D-Bus signal emitted");
+
+                let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                    event_type: "clipboard_received".into(),
+                    device_id: current_device_id.lock().await.clone().unwrap_or_default(),
+                    clipboard_content: Some(content),
+                    ..Default::default()
+                });
             }
             ConnectionEvent::StateUpdated(state) => {
                 let device_id = match current_device_id.lock().await.clone() {
@@ -950,21 +1003,35 @@ impl KdeConnectService {
                     DeviceState::Battery { level, charging } => {
                         DaemonInterface::battery_received(
                             iface_ref.signal_emitter(),
-                            device_id,
+                            device_id.clone(),
                             level as i32,
                             charging,
                         )
                         .await?;
                         debug!("BatteryReceived D-Bus signal emitted");
+
+                        let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                            event_type: "battery_received".into(),
+                            device_id,
+                            battery: Some((level as i64, charging)),
+                            ..Default::default()
+                        });
                     }
                     DeviceState::Connectivity((_, signal_strength)) => {
                         DaemonInterface::connectivity_received(
                             iface_ref.signal_emitter(),
-                            device_id,
+                            device_id.clone(),
                             signal_strength,
                         )
                         .await?;
                         debug!("ConnectivityReceived D-Bus signal emitted");
+
+                        let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                            event_type: "connectivity_received".into(),
+                            device_id,
+                            connectivity_strength: Some(signal_strength as i64),
+                            ..Default::default()
+                        });
                     }
                 }
             }
@@ -994,11 +1061,18 @@ impl KdeConnectService {
                     .await?;
                 DaemonInterface::run_command_list_received(
                     iface_ref.signal_emitter(),
-                    device_id.0,
-                    commands_json,
+                    device_id.0.clone(),
+                    commands_json.clone(),
                 )
                 .await?;
                 debug!("RunCommandListReceived D-Bus signal emitted");
+
+                let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                    event_type: "run_command_list_received".into(),
+                    device_id: device_id.0,
+                    commands_json: Some(commands_json),
+                    ..Default::default()
+                });
             }
             _ => {
                 debug!("Unhandled event type received");

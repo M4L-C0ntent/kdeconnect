@@ -6,9 +6,76 @@ use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 
 use super::app::{SmsMessage, SmsWindow};
-use super::emoji::EmojiCategory;
+use super::emoji::{EmojiCategory, is_emoji_char};
 use super::models::Conversation;
 use super::utils::{format_timestamp, normalize_phone_number, phone_numbers_match};
+
+/// Max characters shown in the conversation-list preview before truncating
+/// with an ellipsis, so every row takes up the same amount of space
+/// regardless of how long the underlying message actually is.
+const PREVIEW_MAX_CHARS: usize = 50;
+
+/// Truncates by character count (not bytes, so multi-byte emoji aren't cut
+/// mid-codepoint) and appends an ellipsis if anything was cut. Doesn't try
+/// to avoid splitting multi-codepoint emoji sequences (e.g. ZWJ-joined
+/// family emoji) right at the boundary — a rare, low-stakes cosmetic edge
+/// case for a preview string, not worth pulling in a grapheme-segmentation
+/// dependency for.
+fn truncate_preview(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut truncated: String = s.chars().take(max_chars).collect();
+    truncated.push('…');
+    truncated
+}
+
+/// Renders text as one paragraph made of spans, switching to `EMOJI_FONT`
+/// only for characters classified as emoji so they get a font with color
+/// glyphs without forcing the surrounding words onto an emoji-only font
+/// (which has no Latin glyphs at all). Built on iced's rich-text/span API
+/// instead of a Row of separate Text widgets, so it wraps as a single
+/// paragraph rather than overflowing on long messages.
+///
+/// Takes `s` as a plain borrow with its own short-lived scope and copies
+/// each span's text into an owned `String` rather than slicing `s`
+/// directly — negligible cost at chat-message length, and it means the
+/// caller can pass something built on the fly (e.g. a truncated preview)
+/// without that temporary having to outlive the returned `Element`.
+fn mixed_emoji_text<'a, M: 'a>(s: &str, size: u16) -> Element<'a, M> {
+    use cosmic::iced::widget::{rich_text, span};
+    use cosmic::iced::widget::text::Span;
+
+    let mut spans: Vec<Span<'a, (), cosmic::iced::Font>> = Vec::new();
+    let mut run_start = 0;
+    let mut run_is_emoji = false;
+    let mut first_run = true;
+
+    let push_run = |spans: &mut Vec<Span<'a, (), cosmic::iced::Font>>, start: usize, end: usize, is_emoji: bool| {
+        if start == end {
+            return;
+        }
+        let sp = span(s[start..end].to_string());
+        spans.push(if is_emoji { sp.font(EMOJI_FONT) } else { sp });
+    };
+
+    for (i, ch) in s.char_indices() {
+        let is_emoji = is_emoji_char(ch);
+        if first_run {
+            run_is_emoji = is_emoji;
+            first_run = false;
+        } else if is_emoji != run_is_emoji {
+            push_run(&mut spans, run_start, i, run_is_emoji);
+            run_start = i;
+            run_is_emoji = is_emoji;
+        }
+    }
+    push_run(&mut spans, run_start, s.len(), run_is_emoji);
+
+    rich_text::<(), M, cosmic::Theme, cosmic::Renderer>(spans)
+        .size(size as f32)
+        .into()
+}
 
 /// Stable ID for the conversations list scrollable, used to scroll it programmatically.
 pub static CONVERSATIONS_SCROLLABLE_ID: std::sync::LazyLock<cosmic::widget::Id> =
@@ -279,7 +346,7 @@ fn view_conversation_item<'a>(
                     .push(widget::text(format_timestamp(conv.timestamp)).size(11))
                     .spacing(spacing.space_xs),
             )
-            .push(widget::text(&conv.last_message).size(12))
+            .push(mixed_emoji_text(&truncate_preview(&conv.last_message, PREVIEW_MAX_CHARS), 12))
             .spacing(spacing.space_xxs)
             .padding(spacing.space_s),
     )
@@ -424,7 +491,7 @@ fn view_message_bubble<'a>(
     }
 
     message_content = message_content
-        .push(widget::text(&msg.body).size(14))
+        .push(mixed_emoji_text(&msg.body, 14))
         .push(widget::text(format_timestamp(msg.date)).size(11))
         .padding(spacing.space_s);
 
@@ -490,15 +557,30 @@ fn view_message_input<'a>(
 /// Emoji picker panel: category tabs + a scrollable grid of emoji for the
 /// selected category. Stays open after inserting an emoji so multiple can
 /// be picked in a row.
+// cosmic-text's font fallback can resolve a handful of codepoints (✈️⚽💡❤️,
+// some smileys) to a non-color font that happens to also cover them, instead
+// of the color emoji font, which renders them as outlines tinted by the
+// button's text color. Pinning the glyph to the color emoji font avoids that.
+const EMOJI_FONT: cosmic::iced::Font = cosmic::iced::Font::with_name("Noto Color Emoji");
+
 fn view_emoji_picker<'a>(
     app: &'a SmsWindow,
     spacing: &cosmic::cosmic_theme::Spacing,
 ) -> Element<'a, SmsMessage> {
-    let mut tabs = widget::Row::new().spacing(spacing.space_xxs);
+    let mut tabs = widget::Row::new()
+        .spacing(spacing.space_xxs)
+        .width(Length::Fill);
     for category in EmojiCategory::all() {
         let is_active = app.emoji_category == category;
-        let tab = widget::button::text(category.label())
-            .on_press(SmsMessage::SelectEmojiCategory(category));
+        let tab = widget::button::custom(
+            widget::text(category.label())
+                .font(EMOJI_FONT)
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+        )
+        .padding(spacing.space_xxs)
+        .width(Length::Fill)
+        .on_press(SmsMessage::SelectEmojiCategory(category));
         tabs = tabs.push(if is_active {
             tab.class(cosmic::theme::Button::Suggested)
         } else {
@@ -508,11 +590,18 @@ fn view_emoji_picker<'a>(
 
     let mut grid = widget::Column::new().spacing(spacing.space_xxs);
     for row_emojis in app.emoji_category.emojis().chunks(8) {
-        let mut row = widget::Row::new().spacing(spacing.space_xxs);
+        let mut row = widget::Row::new().spacing(spacing.space_xxs).width(Length::Fill);
         for emoji in row_emojis {
             row = row.push(
-                widget::button::text(*emoji)
-                    .on_press(SmsMessage::InsertEmoji(emoji.to_string())),
+                widget::button::custom(
+                    widget::text(*emoji)
+                        .font(EMOJI_FONT)
+                        .width(Length::Fill)
+                        .align_x(Alignment::Center),
+                )
+                .padding(spacing.space_xxs)
+                .width(Length::Fill)
+                .on_press(SmsMessage::InsertEmoji(emoji.to_string())),
             );
         }
         grid = grid.push(row);
@@ -524,7 +613,11 @@ fn view_emoji_picker<'a>(
             .padding(spacing.space_s)
             .push(tabs)
             .push(widget::divider::horizontal::light())
-            .push(widget::scrollable(grid).height(Length::Fixed(160.0))),
+            .push(
+                widget::scrollable(grid.width(Length::Fill))
+                    .width(Length::Fill)
+                    .height(Length::Fixed(160.0)),
+            ),
     )
     .class(cosmic::theme::Container::Card)
     .width(Length::Fill)

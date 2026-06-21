@@ -252,6 +252,13 @@ pub async fn reject_pairing(device_id: String) -> Result<()> {
 }
 
 pub async fn ring_device(device_id: String) -> Result<()> {
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.ring_device(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
     let g = CLIENT.lock().await;
     dbus_client!(g).ring_device(&device_id).await
 }
@@ -270,6 +277,16 @@ pub async fn set_plugin_enabled(device_id: String, plugin_id: String, enabled: b
 }
 
 pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
+    if let Some(Ok(reply)) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.get_disabled_plugins(id).call().await
+        }
+    }).await {
+        return reply.plugins;
+    }
+
     let g = CLIENT.lock().await;
     let Some(client) = g.as_ref() else {
         warn!("D-Bus client not initialized");
@@ -285,11 +302,22 @@ pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
 }
 
 pub async fn broadcast_identity() -> Result<()> {
+    if let Some(r) = via_varlink(|c| async move {
+        use kdeconnect_varlink::iface::VarlinkClientInterface;
+        c.broadcast_identity().call().await.map(|_| ())
+    }).await { return r; }
     let g = CLIENT.lock().await;
     dbus_client!(g).broadcast_identity().await
 }
 
 pub async fn request_run_commands(device_id: String) -> Result<()> {
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.request_run_commands(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
     let g = CLIENT.lock().await;
     dbus_client!(g).request_run_commands(&device_id).await
 }
@@ -318,6 +346,13 @@ pub async fn push_local_commands(device_id: String) {
 
 /// Stream of service events. Reconnects automatically when the client is
 /// replaced (e.g. after session logout/login) or the stream ends.
+///
+/// NOTE: this stays D-Bus-only. varlink's `Subscribe()` looked like a fit,
+/// but this version of the varlink/varlink_generator crates doesn't actually
+/// support streaming replies in async mode (`set_continues` is a no-op,
+/// `reply_struct` only ever keeps the latest reply in memory) — a handler
+/// that loops and replies repeatedly never returns, so nothing is ever
+/// written to the socket and the client's first `recv()` blocks forever.
 pub async fn event_stream() -> futures::stream::BoxStream<'static, ServiceEvent> {
     use tokio::sync::mpsc;
     use tokio::time::{Duration, sleep};
