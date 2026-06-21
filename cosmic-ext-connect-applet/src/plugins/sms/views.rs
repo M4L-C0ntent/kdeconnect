@@ -10,13 +10,39 @@ use super::emoji::{EmojiCategory, is_emoji_char};
 use super::models::Conversation;
 use super::utils::{format_timestamp, normalize_phone_number, phone_numbers_match};
 
+/// Max characters shown in the conversation-list preview before truncating
+/// with an ellipsis, so every row takes up the same amount of space
+/// regardless of how long the underlying message actually is.
+const PREVIEW_MAX_CHARS: usize = 50;
+
+/// Truncates by character count (not bytes, so multi-byte emoji aren't cut
+/// mid-codepoint) and appends an ellipsis if anything was cut. Doesn't try
+/// to avoid splitting multi-codepoint emoji sequences (e.g. ZWJ-joined
+/// family emoji) right at the boundary — a rare, low-stakes cosmetic edge
+/// case for a preview string, not worth pulling in a grapheme-segmentation
+/// dependency for.
+fn truncate_preview(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let mut truncated: String = s.chars().take(max_chars).collect();
+    truncated.push('…');
+    truncated
+}
+
 /// Renders text as one paragraph made of spans, switching to `EMOJI_FONT`
-/// only for characters in `ALL_EMOJI_CHARS` so emoji get a font with color
+/// only for characters classified as emoji so they get a font with color
 /// glyphs without forcing the surrounding words onto an emoji-only font
 /// (which has no Latin glyphs at all). Built on iced's rich-text/span API
 /// instead of a Row of separate Text widgets, so it wraps as a single
 /// paragraph rather than overflowing on long messages.
-fn mixed_emoji_text<'a, M: 'a>(s: &'a str, size: u16) -> Element<'a, M> {
+///
+/// Takes `s` as a plain borrow with its own short-lived scope and copies
+/// each span's text into an owned `String` rather than slicing `s`
+/// directly — negligible cost at chat-message length, and it means the
+/// caller can pass something built on the fly (e.g. a truncated preview)
+/// without that temporary having to outlive the returned `Element`.
+fn mixed_emoji_text<'a, M: 'a>(s: &str, size: u16) -> Element<'a, M> {
     use cosmic::iced::widget::{rich_text, span};
     use cosmic::iced::widget::text::Span;
 
@@ -29,7 +55,7 @@ fn mixed_emoji_text<'a, M: 'a>(s: &'a str, size: u16) -> Element<'a, M> {
         if start == end {
             return;
         }
-        let sp = span(&s[start..end]);
+        let sp = span(s[start..end].to_string());
         spans.push(if is_emoji { sp.font(EMOJI_FONT) } else { sp });
     };
 
@@ -320,7 +346,7 @@ fn view_conversation_item<'a>(
                     .push(widget::text(format_timestamp(conv.timestamp)).size(11))
                     .spacing(spacing.space_xs),
             )
-            .push(mixed_emoji_text(&conv.last_message, 12))
+            .push(mixed_emoji_text(&truncate_preview(&conv.last_message, PREVIEW_MAX_CHARS), 12))
             .spacing(spacing.space_xxs)
             .padding(spacing.space_s),
     )
