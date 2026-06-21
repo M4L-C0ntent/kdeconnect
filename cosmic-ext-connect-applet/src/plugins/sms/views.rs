@@ -6,9 +6,50 @@ use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 
 use super::app::{SmsMessage, SmsWindow};
-use super::emoji::EmojiCategory;
+use super::emoji::{EmojiCategory, is_emoji_char};
 use super::models::Conversation;
 use super::utils::{format_timestamp, normalize_phone_number, phone_numbers_match};
+
+/// Renders text as one paragraph made of spans, switching to `EMOJI_FONT`
+/// only for characters in `ALL_EMOJI_CHARS` so emoji get a font with color
+/// glyphs without forcing the surrounding words onto an emoji-only font
+/// (which has no Latin glyphs at all). Built on iced's rich-text/span API
+/// instead of a Row of separate Text widgets, so it wraps as a single
+/// paragraph rather than overflowing on long messages.
+fn mixed_emoji_text<'a, M: 'a>(s: &'a str, size: u16) -> Element<'a, M> {
+    use cosmic::iced::widget::{rich_text, span};
+    use cosmic::iced::widget::text::Span;
+
+    let mut spans: Vec<Span<'a, (), cosmic::iced::Font>> = Vec::new();
+    let mut run_start = 0;
+    let mut run_is_emoji = false;
+    let mut first_run = true;
+
+    let push_run = |spans: &mut Vec<Span<'a, (), cosmic::iced::Font>>, start: usize, end: usize, is_emoji: bool| {
+        if start == end {
+            return;
+        }
+        let sp = span(&s[start..end]);
+        spans.push(if is_emoji { sp.font(EMOJI_FONT) } else { sp });
+    };
+
+    for (i, ch) in s.char_indices() {
+        let is_emoji = is_emoji_char(ch);
+        if first_run {
+            run_is_emoji = is_emoji;
+            first_run = false;
+        } else if is_emoji != run_is_emoji {
+            push_run(&mut spans, run_start, i, run_is_emoji);
+            run_start = i;
+            run_is_emoji = is_emoji;
+        }
+    }
+    push_run(&mut spans, run_start, s.len(), run_is_emoji);
+
+    rich_text::<(), M, cosmic::Theme, cosmic::Renderer>(spans)
+        .size(size as f32)
+        .into()
+}
 
 /// Stable ID for the conversations list scrollable, used to scroll it programmatically.
 pub static CONVERSATIONS_SCROLLABLE_ID: std::sync::LazyLock<cosmic::widget::Id> =
@@ -279,7 +320,7 @@ fn view_conversation_item<'a>(
                     .push(widget::text(format_timestamp(conv.timestamp)).size(11))
                     .spacing(spacing.space_xs),
             )
-            .push(widget::text(&conv.last_message).size(12))
+            .push(mixed_emoji_text(&conv.last_message, 12))
             .spacing(spacing.space_xxs)
             .padding(spacing.space_s),
     )
@@ -424,7 +465,7 @@ fn view_message_bubble<'a>(
     }
 
     message_content = message_content
-        .push(widget::text(&msg.body).size(14))
+        .push(mixed_emoji_text(&msg.body, 14))
         .push(widget::text(format_timestamp(msg.date)).size(11))
         .padding(spacing.space_s);
 
