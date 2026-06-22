@@ -1,6 +1,7 @@
 // #[allow(dead_code)] = Placeholder for code that will be used once features are fully integrated
 
 use crate::models::Device;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -54,4 +55,7 @@ pub enum Message {
     RequestRunCommands(String),              // device_id
     RunCommandsReceived(String, String),     // device_id, commands_json
     ExecuteRunCommand(String, String),       // device_id, key
+
+    // SMS unread indicator for the quick-actions menu — device_id -> has_unread
+    UnreadSmsUpdated(HashMap<String, bool>),
 }

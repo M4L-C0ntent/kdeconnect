@@ -21,6 +21,8 @@ use crate::{
 
 pub mod config;
 pub mod plugin_config;
+pub mod hidden_conversations;
+pub mod sms_read_state;
 pub(crate) mod crypto;
 pub mod device;
 pub mod event;

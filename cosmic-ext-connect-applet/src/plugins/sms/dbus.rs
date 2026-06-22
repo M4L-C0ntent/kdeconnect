@@ -199,19 +199,35 @@ pub async fn get_cached_sms(device_id: &str) -> Option<String> {
 pub fn parse_sms_messages(messages_json: &str) -> (Vec<Message>, Vec<Conversation>) {
     use std::collections::HashMap;
 
-    let sms_data =
-        match serde_json::from_str::<kdeconnect_core::plugins::sms::SmsMessages>(messages_json) {
-            Ok(d) => d,
+    let raw: serde_json::Value = match serde_json::from_str(messages_json) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("SMS JSON parse failed: {:?}", e);
+            return (vec![], vec![]);
+        }
+    };
+
+    let raw_messages = raw.get("messages").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+
+    // Deserialize message-by-message rather than the whole array at once.
+    // A single unusual entry — e.g. a read receipt, reaction, or other
+    // event row a phone's RCS client can write into the same message
+    // store KDE Connect's SmsHelper reads from — shouldn't take down the
+    // rest of an otherwise-normal conversation. Skip and log, don't fail.
+    let sms_messages: Vec<kdeconnect_core::plugins::sms::SmsMessage> = raw_messages
+        .into_iter()
+        .filter_map(|item| match serde_json::from_value(item) {
+            Ok(msg) => Some(msg),
             Err(e) => {
-                error!("SMS JSON parse failed: {:?}", e);
-                return (vec![], vec![]);
+                debug!("Skipping one SMS entry with unexpected shape: {:?}", e);
+                None
             }
-        };
+        })
+        .collect();
 
-    debug!("parsed {} SMS messages", sms_data.messages.len());
+    debug!("parsed {} SMS messages", sms_messages.len());
 
-    let messages: Vec<Message> = sms_data
-        .messages
+    let messages: Vec<Message> = sms_messages
         .iter()
         .map(|msg| {
             let address = msg

@@ -10,39 +10,12 @@ use futures::StreamExt;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
+use super::actions::SmsMessage;
 use super::dbus;
 use super::emoji::EmojiCategory;
 use super::models::{Conversation, Message, ProtocolEvent};
 use super::utils;
 use super::views;
-
-#[derive(Clone, Debug)]
-pub enum SmsMessage {
-    #[allow(dead_code)]
-    LoadConversations,
-    #[allow(dead_code)]
-    ConversationsLoaded(Vec<Conversation>),
-    #[allow(dead_code)]
-    ContactsLoaded(HashMap<String, String>),
-    SelectThread(String),
-    UpdateInput(String),
-    UpdateSearch(String),
-    SendMessage,
-    RefreshThread,
-    #[allow(dead_code)]
-    CloseWindow,
-    ProtocolEventReceived(ProtocolEvent),
-    OpenNewChatDialog,
-    CloseNewChatDialog,
-    UpdateNewChatPhone(String),
-    SelectContactForNewChat(String, String),
-    CreateNewChat,
-
-    // Emoji picker
-    ToggleEmojiPicker,
-    SelectEmojiCategory(EmojiCategory),
-    InsertEmoji(String),
-}
 
 pub struct SmsWindow {
     core: Core,
@@ -60,6 +33,18 @@ pub struct SmsWindow {
     pub new_chat_phone_input: String,
     pub show_emoji_picker: bool,
     pub emoji_category: EmojiCategory,
+    /// Thread IDs hidden via the delete flow — see hidden_conversations docs.
+    pub hidden_conversations: std::collections::HashSet<String>,
+    /// Thread ID pending delete confirmation, if the dialog is open.
+    pub pending_delete_thread: Option<String>,
+    /// Per-thread timestamp of the latest message the user has actually
+    /// viewed in this app session. Drives the unread indicator instead of
+    /// the phone's own read flag, since there's no protocol way to write
+    /// "read" back to the phone — see SelectThread and MessageReceived for
+    /// where this gets updated, and is_conversation_unread in views.rs for
+    /// how it's combined with the phone-reported flag as a bootstrap value
+    /// for threads never opened this session.
+    pub last_seen_timestamp: HashMap<String, i64>,
 }
 
 impl Application for SmsWindow {
@@ -95,6 +80,9 @@ impl Application for SmsWindow {
             new_chat_phone_input: String::new(),
             show_emoji_picker: false,
             emoji_category: EmojiCategory::Smileys,
+            hidden_conversations: kdeconnect_core::hidden_conversations::load_hidden(&device_id),
+            pending_delete_thread: None,
+            last_seen_timestamp: kdeconnect_core::sms_read_state::load_last_seen(&device_id),
         };
 
         let title = fl!("sms-window-title", device = device_name.as_str());
@@ -111,7 +99,20 @@ impl Application for SmsWindow {
     fn subscription(&self) -> Subscription<Self::Message> {
         let device_id = self.device_id.clone();
 
-        Subscription::run_with(device_id, |device_id| {
+        Subscription::batch(vec![
+            // Safety net for state that only changes on the phone with no
+            // corresponding push (e.g. reading a message there) — see the
+            // read-state discussion this was added for. Reuses
+            // LoadConversations, the same fire-and-forget request already
+            // used at startup/reconnect; RefreshThread (its follow-up) is a
+            // no-op, and the actual data still flows back through the same
+            // event-stream path with its existing dedup/merge logic, so this
+            // can't disrupt an open thread's scroll position or message list.
+            // 45s: frequent enough to not feel stale, infrequent enough not
+            // to nag the phone with requests it has to hit its SMS DB for.
+            cosmic::iced::time::every(std::time::Duration::from_secs(45))
+                .map(|_| SmsMessage::LoadConversations),
+            Subscription::run_with(device_id, |device_id| {
             let device_id = device_id.clone();
             stream! {
                 info!("SMS event stream started for device={}", device_id);
@@ -190,7 +191,8 @@ impl Application for SmsWindow {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
-        })
+        }),
+        ])
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Action<Self::Message>> {
@@ -214,13 +216,24 @@ impl Application for SmsWindow {
             }
             SmsMessage::SelectThread(thread_id) => {
                 debug!("SelectThread: {}", thread_id);
+                if let Some(conv) = self.conversations.iter().find(|c| c.thread_id == thread_id) {
+                    self.last_seen_timestamp.insert(thread_id.clone(), conv.timestamp);
+                }
                 self.selected_thread = Some(thread_id.clone());
                 self.messages.clear();
                 let device_id = self.device_id.clone();
-                return cosmic::task::future(async move {
-                    dbus::request_conversation_messages(&device_id, &thread_id).await;
-                    Action::App(SmsMessage::RefreshThread)
-                });
+                let device_id2 = device_id.clone();
+                let last_seen = self.last_seen_timestamp.clone();
+                return Task::batch([
+                    cosmic::task::future(async move {
+                        dbus::request_conversation_messages(&device_id, &thread_id).await;
+                        Action::App(SmsMessage::RefreshThread)
+                    }),
+                    cosmic::task::future(async move {
+                        kdeconnect_core::sms_read_state::save_last_seen(&device_id2, &last_seen).await;
+                        Action::None
+                    }),
+                ]);
             }
             SmsMessage::UpdateInput(input) => {
                 self.message_input = input;
@@ -327,8 +340,38 @@ impl Application for SmsWindow {
             SmsMessage::InsertEmoji(emoji) => {
                 self.message_input.push_str(&emoji);
             }
+            SmsMessage::RequestDeleteConversation(thread_id) => {
+                self.pending_delete_thread = Some(thread_id);
+            }
+            SmsMessage::CancelDeleteConversation => {
+                self.pending_delete_thread = None;
+            }
+            SmsMessage::ConfirmDeleteConversation => {
+                let Some(thread_id) = self.pending_delete_thread.take() else {
+                    return Task::none();
+                };
+
+                self.conversations.retain(|c| c.thread_id != thread_id);
+                self.hidden_conversations.insert(thread_id.clone());
+
+                if self.selected_thread.as_deref() == Some(thread_id.as_str()) {
+                    self.selected_thread = None;
+                    self.messages.clear();
+                }
+
+                let device_id = self.device_id.clone();
+                let hidden = self.hidden_conversations.clone();
+                return cosmic::task::future(async move {
+                    kdeconnect_core::hidden_conversations::save_hidden(&device_id, &hidden).await;
+                    Action::None
+                });
+            }
         }
         Task::none()
+    }
+
+    fn dialog(&self) -> Option<Element<'_, Self::Message>> {
+        self.pending_delete_thread.as_ref().map(|_| self.delete_confirm_dialog())
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
@@ -345,6 +388,35 @@ impl Application for SmsWindow {
 }
 
 impl SmsWindow {
+    /// Builds the delete-confirmation dialog shown via `Application::dialog()`.
+    fn delete_confirm_dialog(&self) -> Element<'_, SmsMessage> {
+        let display_name = self
+            .pending_delete_thread
+            .as_ref()
+            .and_then(|tid| self.conversations.iter().find(|c| &c.thread_id == tid))
+            .map(|c| {
+                self.contacts
+                    .iter()
+                    .find(|(phone, _)| utils::phone_numbers_match(&c.phone_number, phone))
+                    .map(|(_, name)| name.clone())
+                    .unwrap_or_else(|| c.phone_number.clone())
+            })
+            .unwrap_or_default();
+
+        widget::dialog()
+            .title(fl!("sms-delete-confirm-title"))
+            .body(fl!("sms-delete-confirm-body", name = display_name.as_str()))
+            .primary_action(
+                widget::button::destructive(fl!("sms-delete-confirm-action"))
+                    .on_press(SmsMessage::ConfirmDeleteConversation),
+            )
+            .secondary_action(
+                widget::button::standard(fl!("sms-delete-confirm-cancel"))
+                    .on_press(SmsMessage::CancelDeleteConversation),
+            )
+            .into()
+    }
+
     fn handle_protocol_event(&mut self, event: ProtocolEvent) {
         match event {
             ProtocolEvent::ConversationsReceived(conversations) => {
@@ -392,6 +464,7 @@ impl SmsWindow {
                 });
 
                 self.conversations = merged;
+                self.conversations.retain(|c| !self.hidden_conversations.contains(&c.thread_id));
                 self.update_conversation_names();
 
                 // If we had a new_* selected, find its real thread by phone number now
@@ -406,9 +479,26 @@ impl SmsWindow {
             }
             ProtocolEvent::MessageReceived(message) => {
                 debug!("MessageReceived thread={}", message.thread_id);
+
+                if self.hidden_conversations.contains(&message.thread_id) {
+                    return;
+                }
+
                 let is_selected = self.selected_thread.as_deref() == Some(&message.thread_id);
 
                 if is_selected {
+                    let seen = self
+                        .last_seen_timestamp
+                        .entry(message.thread_id.clone())
+                        .or_insert(0);
+                    *seen = (*seen).max(message.date);
+
+                    let device_id = self.device_id.clone();
+                    let last_seen = self.last_seen_timestamp.clone();
+                    tokio::spawn(async move {
+                        kdeconnect_core::sms_read_state::save_last_seen(&device_id, &last_seen).await;
+                    });
+
                     let already_exists = self.messages.iter().any(|m| {
                         m.id == message.id
                             || (m.id.starts_with("sending_")
@@ -439,6 +529,9 @@ impl SmsWindow {
                 {
                     conv.last_message = message.body;
                     conv.timestamp = message.date;
+                    if !is_selected && message.type_ != 2 {
+                        conv.unread = true;
+                    }
                 }
                 self.conversations
                     .sort_by(|a, b| b.timestamp.cmp(&a.timestamp));

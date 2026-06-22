@@ -301,6 +301,48 @@ pub async fn get_disabled_plugins(device_id: String) -> Vec<String> {
     }
 }
 
+/// Checks whether a device has any unread SMS conversation, for the
+/// quick-actions menu's indicator next to "SMS Messages". Reuses the same
+/// shared comparison kdeconnect_core::plugins::sms::has_unread as the SMS
+/// window itself, against the same on-disk last-seen state — see
+/// sms_read_state.rs for why this has to be on-disk at all (the SMS
+/// window is a separate process with no other way to share this here).
+pub async fn has_unread_sms(device_id: String) -> bool {
+    let json = if let Some(Ok(reply)) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.get_cached_sms(id).call().await
+        }
+    }).await {
+        Some(reply.json)
+    } else {
+        let g = CLIENT.lock().await;
+        match g.as_ref() {
+            Some(client) => client.get_cached_sms(&device_id).await.ok(),
+            None => None,
+        }
+    };
+
+    let Some(json) = json.filter(|j| !j.is_empty()) else {
+        return false;
+    };
+
+    let last_seen = kdeconnect_core::sms_read_state::load_last_seen(&device_id);
+    kdeconnect_core::plugins::sms::has_unread(&json, &last_seen)
+}
+
+/// Checks unread SMS state for several devices at once, e.g. every device
+/// currently shown in the panel popup.
+pub async fn check_unread_sms(device_ids: Vec<String>) -> HashMap<String, bool> {
+    let mut result = HashMap::new();
+    for id in device_ids {
+        let unread = has_unread_sms(id.clone()).await;
+        result.insert(id, unread);
+    }
+    result
+}
+
 pub async fn broadcast_identity() -> Result<()> {
     if let Some(r) = via_varlink(|c| async move {
         use kdeconnect_varlink::iface::VarlinkClientInterface;
