@@ -14,6 +14,7 @@ pub fn create_popup_view<'a>(
     expanded_device: Option<&'a String>,
     pairing_requests: Option<&'a HashMap<String, String>>,
     accent_color: cosmic::iced::Color,
+    unread_sms: &'a HashMap<String, bool>,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::active().cosmic().spacing;
     let mut content = widget::Column::new()
@@ -124,7 +125,8 @@ pub fn create_popup_view<'a>(
         );
 
         for device in paired_devices {
-            content = content.push(create_device_card(device, &spacing, expanded_device, accent_color));
+            let device_unread = unread_sms.get(&device.id).copied().unwrap_or(false);
+            content = content.push(create_device_card(device, &spacing, expanded_device, accent_color, device_unread));
         }
     }
 
@@ -143,6 +145,7 @@ fn create_device_card<'a>(
     spacing: &cosmic::cosmic_theme::Spacing,
     expanded_device: Option<&'a String>,
     accent_color: cosmic::iced::Color,
+    has_unread_sms: bool,
 ) -> Element<'a, Message> {
     let is_expanded = expanded_device == Some(&device.id);
     let is_online = device.is_reachable;
@@ -220,8 +223,29 @@ fn create_device_card<'a>(
             );
         }
 
+        let mut sms_label = widget::Row::new()
+            .push(widget::text(fl!("quick-actions-sms")).size(14).width(Length::Fill))
+            .align_y(Alignment::Center)
+            .spacing(spacing.space_xs);
+
+        if has_unread_sms {
+            sms_label = sms_label.push(
+                widget::container(widget::Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0)))
+                    .class(cosmic::theme::Container::custom(move |_theme| {
+                        cosmic::iced::widget::container::Style {
+                            background: Some(cosmic::iced::Background::Color(accent_color)),
+                            border: cosmic::iced::Border {
+                                radius: cosmic::iced::Radius::from(4.0),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }
+                    })),
+            );
+        }
+
         menu_items = menu_items.push(
-            widget::button::text(fl!("quick-actions-sms"))
+            widget::button::custom(sms_label)
                 .on_press(Message::SendSMS(device.id.clone()))
                 .width(Length::Fill)
                 .class(theme::accent_link_button(accent_color)),

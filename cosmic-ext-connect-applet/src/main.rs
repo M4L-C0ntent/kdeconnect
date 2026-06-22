@@ -23,6 +23,8 @@ pub struct KdeConnectApplet {
     /// Pending pairing requests: device_id → device_name
     pairing_requests: HashMap<String, String>,
     accent_color: cosmic::iced::Color,
+    /// device_id -> has unread SMS, for the quick-actions menu indicator.
+    unread_sms: HashMap<String, bool>,
 }
 
 impl KdeConnectApplet {
@@ -78,6 +80,7 @@ impl cosmic::Application for KdeConnectApplet {
             pairing_requests: HashMap::new(),
             accent_color: theme::try_load_cosmic_accent()
                 .unwrap_or(theme::FALLBACK_TEAL),
+            unread_sms: HashMap::new(),
         };
 
         (app, Task::none())
@@ -108,9 +111,18 @@ impl cosmic::Application for KdeConnectApplet {
                 }
             }
             Message::RefreshDevices => {
-                return Task::perform(backend::fetch_devices(), |devices| {
-                    cosmic::Action::App(Message::DevicesUpdated(devices))
-                });
+                let device_ids: Vec<String> = self.devices.keys().cloned().collect();
+                return Task::batch(vec![
+                    Task::perform(backend::fetch_devices(), |devices| {
+                        cosmic::Action::App(Message::DevicesUpdated(devices))
+                    }),
+                    Task::perform(backend::check_unread_sms(device_ids), |unread| {
+                        cosmic::Action::App(Message::UnreadSmsUpdated(unread))
+                    }),
+                ]);
+            }
+            Message::UnreadSmsUpdated(unread) => {
+                self.unread_sms = unread;
             }
             Message::DevicesUpdated(devices) => {
                 self.devices.clear();
@@ -390,6 +402,7 @@ impl cosmic::Application for KdeConnectApplet {
             self.expanded_device.as_ref(),
             Some(&self.pairing_requests),
             self.accent_color,
+            &self.unread_sms,
         )
     }
 

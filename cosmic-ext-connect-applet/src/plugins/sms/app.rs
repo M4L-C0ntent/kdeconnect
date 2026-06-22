@@ -118,7 +118,7 @@ impl Application for SmsWindow {
             emoji_category: EmojiCategory::Smileys,
             hidden_conversations: kdeconnect_core::hidden_conversations::load_hidden(&device_id),
             pending_delete_thread: None,
-            last_seen_timestamp: HashMap::new(),
+            last_seen_timestamp: kdeconnect_core::sms_read_state::load_last_seen(&device_id),
         };
 
         let title = fl!("sms-window-title", device = device_name.as_str());
@@ -258,10 +258,18 @@ impl Application for SmsWindow {
                 self.selected_thread = Some(thread_id.clone());
                 self.messages.clear();
                 let device_id = self.device_id.clone();
-                return cosmic::task::future(async move {
-                    dbus::request_conversation_messages(&device_id, &thread_id).await;
-                    Action::App(SmsMessage::RefreshThread)
-                });
+                let device_id2 = device_id.clone();
+                let last_seen = self.last_seen_timestamp.clone();
+                return Task::batch([
+                    cosmic::task::future(async move {
+                        dbus::request_conversation_messages(&device_id, &thread_id).await;
+                        Action::App(SmsMessage::RefreshThread)
+                    }),
+                    cosmic::task::future(async move {
+                        kdeconnect_core::sms_read_state::save_last_seen(&device_id2, &last_seen).await;
+                        Action::None
+                    }),
+                ]);
             }
             SmsMessage::UpdateInput(input) => {
                 self.message_input = input;
@@ -520,6 +528,12 @@ impl SmsWindow {
                         .entry(message.thread_id.clone())
                         .or_insert(0);
                     *seen = (*seen).max(message.date);
+
+                    let device_id = self.device_id.clone();
+                    let last_seen = self.last_seen_timestamp.clone();
+                    tokio::spawn(async move {
+                        kdeconnect_core::sms_read_state::save_last_seen(&device_id, &last_seen).await;
+                    });
 
                     let already_exists = self.messages.iter().any(|m| {
                         m.id == message.id
