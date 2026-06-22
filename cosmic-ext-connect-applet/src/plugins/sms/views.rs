@@ -333,18 +333,38 @@ fn view_conversation_item<'a>(
         }),
     };
 
+    let unread = is_conversation_unread(app, conv);
+
+    let mut name_row = widget::Row::new()
+        .push(
+            widget::text(display_name)
+                .size(14)
+                .font(cosmic::font::bold()),
+        )
+        .spacing(spacing.space_xs);
+
+    if unread {
+        name_row = name_row.push(
+            widget::container(widget::Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0)))
+                .class(cosmic::theme::Container::custom(move |_theme| {
+                    cosmic::iced::widget::container::Style {
+                        background: Some(cosmic::iced::Background::Color(accent)),
+                        border: cosmic::iced::Border {
+                            radius: cosmic::iced::Radius::from(4.0),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }
+                })),
+        );
+    }
+
     let button = widget::button::custom(
         widget::Column::new()
             .push(
-                widget::Row::new()
-                    .push(
-                        widget::text(display_name)
-                            .size(14)
-                            .font(cosmic::font::bold()),
-                    )
+                name_row
                     .push(widget::space::horizontal())
-                    .push(widget::text(format_timestamp(conv.timestamp)).size(11))
-                    .spacing(spacing.space_xs),
+                    .push(widget::text(format_timestamp(conv.timestamp)).size(11)),
             )
             .push(mixed_emoji_text(&truncate_preview(&conv.last_message, PREVIEW_MAX_CHARS), 12))
             .spacing(spacing.space_xxs)
@@ -649,4 +669,18 @@ fn get_current_conversation_phone(app: &SmsWindow) -> Option<String> {
         .iter()
         .find(|c| c.thread_id == *thread_id)
         .map(|c| c.phone_number.clone())
+}
+
+/// True if this conversation should show the unread indicator. Once a
+/// thread has been opened in this app session, the phone's own read flag
+/// is ignored in favor of comparing against the last message timestamp
+/// the user actually saw — there's no protocol way to write "read" back
+/// to the phone, so mirroring its flag forever would mean the badge never
+/// clears just because you read it here. For threads never opened this
+/// session, falls back to the phone-reported flag as a reasonable guess.
+fn is_conversation_unread(app: &SmsWindow, conv: &Conversation) -> bool {
+    match app.last_seen_timestamp.get(&conv.thread_id) {
+        Some(&seen_at) => conv.timestamp > seen_at,
+        None => conv.unread,
+    }
 }

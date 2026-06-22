@@ -73,6 +73,14 @@ pub struct SmsWindow {
     pub hidden_conversations: std::collections::HashSet<String>,
     /// Thread ID pending delete confirmation, if the dialog is open.
     pub pending_delete_thread: Option<String>,
+    /// Per-thread timestamp of the latest message the user has actually
+    /// viewed in this app session. Drives the unread indicator instead of
+    /// the phone's own read flag, since there's no protocol way to write
+    /// "read" back to the phone — see SelectThread and MessageReceived for
+    /// where this gets updated, and is_conversation_unread in views.rs for
+    /// how it's combined with the phone-reported flag as a bootstrap value
+    /// for threads never opened this session.
+    pub last_seen_timestamp: HashMap<String, i64>,
 }
 
 impl Application for SmsWindow {
@@ -110,6 +118,7 @@ impl Application for SmsWindow {
             emoji_category: EmojiCategory::Smileys,
             hidden_conversations: kdeconnect_core::hidden_conversations::load_hidden(&device_id),
             pending_delete_thread: None,
+            last_seen_timestamp: HashMap::new(),
         };
 
         let title = fl!("sms-window-title", device = device_name.as_str());
@@ -126,7 +135,20 @@ impl Application for SmsWindow {
     fn subscription(&self) -> Subscription<Self::Message> {
         let device_id = self.device_id.clone();
 
-        Subscription::run_with(device_id, |device_id| {
+        Subscription::batch(vec![
+            // Safety net for state that only changes on the phone with no
+            // corresponding push (e.g. reading a message there) — see the
+            // read-state discussion this was added for. Reuses
+            // LoadConversations, the same fire-and-forget request already
+            // used at startup/reconnect; RefreshThread (its follow-up) is a
+            // no-op, and the actual data still flows back through the same
+            // event-stream path with its existing dedup/merge logic, so this
+            // can't disrupt an open thread's scroll position or message list.
+            // 45s: frequent enough to not feel stale, infrequent enough not
+            // to nag the phone with requests it has to hit its SMS DB for.
+            cosmic::iced::time::every(std::time::Duration::from_secs(45))
+                .map(|_| SmsMessage::LoadConversations),
+            Subscription::run_with(device_id, |device_id| {
             let device_id = device_id.clone();
             stream! {
                 info!("SMS event stream started for device={}", device_id);
@@ -205,7 +227,8 @@ impl Application for SmsWindow {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
-        })
+        }),
+        ])
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Action<Self::Message>> {
@@ -229,6 +252,9 @@ impl Application for SmsWindow {
             }
             SmsMessage::SelectThread(thread_id) => {
                 debug!("SelectThread: {}", thread_id);
+                if let Some(conv) = self.conversations.iter().find(|c| c.thread_id == thread_id) {
+                    self.last_seen_timestamp.insert(thread_id.clone(), conv.timestamp);
+                }
                 self.selected_thread = Some(thread_id.clone());
                 self.messages.clear();
                 let device_id = self.device_id.clone();
@@ -489,6 +515,12 @@ impl SmsWindow {
                 let is_selected = self.selected_thread.as_deref() == Some(&message.thread_id);
 
                 if is_selected {
+                    let seen = self
+                        .last_seen_timestamp
+                        .entry(message.thread_id.clone())
+                        .or_insert(0);
+                    *seen = (*seen).max(message.date);
+
                     let already_exists = self.messages.iter().any(|m| {
                         m.id == message.id
                             || (m.id.starts_with("sending_")
@@ -519,6 +551,9 @@ impl SmsWindow {
                 {
                     conv.last_message = message.body;
                     conv.timestamp = message.date;
+                    if !is_selected && message.type_ != 2 {
+                        conv.unread = true;
+                    }
                 }
                 self.conversations
                     .sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
