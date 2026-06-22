@@ -5,7 +5,8 @@ use cosmic::Element;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 
-use super::app::{SmsMessage, SmsWindow};
+use super::actions::SmsMessage;
+use super::app::SmsWindow;
 use super::emoji::{EmojiCategory, is_emoji_char};
 use super::models::Conversation;
 use super::utils::{format_timestamp, normalize_phone_number, phone_numbers_match};

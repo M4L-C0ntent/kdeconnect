@@ -10,48 +10,12 @@ use futures::StreamExt;
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
+use super::actions::SmsMessage;
 use super::dbus;
 use super::emoji::EmojiCategory;
 use super::models::{Conversation, Message, ProtocolEvent};
 use super::utils;
 use super::views;
-
-#[derive(Clone, Debug)]
-pub enum SmsMessage {
-    #[allow(dead_code)]
-    LoadConversations,
-    #[allow(dead_code)]
-    ConversationsLoaded(Vec<Conversation>),
-    #[allow(dead_code)]
-    ContactsLoaded(HashMap<String, String>),
-    SelectThread(String),
-    UpdateInput(String),
-    UpdateSearch(String),
-    SendMessage,
-    RefreshThread,
-    #[allow(dead_code)]
-    CloseWindow,
-    ProtocolEventReceived(ProtocolEvent),
-    OpenNewChatDialog,
-    CloseNewChatDialog,
-    UpdateNewChatPhone(String),
-    SelectContactForNewChat(String, String),
-    CreateNewChat,
-
-    // Emoji picker
-    ToggleEmojiPicker,
-    SelectEmojiCategory(EmojiCategory),
-    InsertEmoji(String),
-
-    /// Opens the confirmation dialog for deleting (hiding) a conversation.
-    RequestDeleteConversation(String),
-    /// Closes the confirmation dialog without deleting anything.
-    CancelDeleteConversation,
-    /// Hides the pending conversation from this device's view going
-    /// forward. Local-only — the SMS protocol has no delete packet, so
-    /// this never touches the phone's actual messages or conversation.
-    ConfirmDeleteConversation,
-}
 
 pub struct SmsWindow {
     core: Core,
