@@ -13,13 +13,16 @@ pub struct SmsMessages {
 pub struct SmsMessage {
     #[serde(rename = "_id")]
     pub id: i64,
+    #[serde(default)]
     pub addresses: Vec<SmsAddress>,
     #[serde(default)]
     pub attachments: Vec<SmsAttachment>,
+    #[serde(default)]
     pub body: String,
     pub date: i64,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default)]
     pub message_type: i32,
+    #[serde(default)]
     pub read: i32,
     pub thread_id: i64,
     #[serde(default)]
