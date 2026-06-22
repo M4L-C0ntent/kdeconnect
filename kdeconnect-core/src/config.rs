@@ -17,6 +17,14 @@ pub const DEVICE_ID_STORE: &str = "device_id";
 
 /// Packet types we can RECEIVE from the phone (phone's outgoingCapabilities must overlap these).
 /// The phone checks this list before sending unsolicited data (battery, SMS messages, etc.).
+///
+/// NOTE: mousepad/remote-input is deliberately absent here and from
+/// OUTGOING_CAPABILITIES below. There's no actual implementation behind
+/// it — plugins/mousepad.rs is just a bare data struct, with no packet
+/// dispatch anywhere in kdeconnect-service — and Remote Input also needs
+/// compositor RDP support COSMIC doesn't provide yet (same reason it's in
+/// plugin_config.rs's disabled-by-default set). Re-add kdeconnect.mousepad.request/keyboardstate here once
+/// there's a real implementation to back it.
 const INCOMING_CAPABILITIES: &[&str] = &[
     "kdeconnect.battery",
     "kdeconnect.clipboard",
@@ -24,7 +32,6 @@ const INCOMING_CAPABILITIES: &[&str] = &[
     "kdeconnect.connectivity_report",
     "kdeconnect.contacts.response_uids_timestamps",
     "kdeconnect.contacts.response_vcards",
-    "kdeconnect.mousepad.keyboardstate",
     "kdeconnect.mpris",
     "kdeconnect.mpris.request",
     "kdeconnect.notification",
@@ -42,8 +49,6 @@ const OUTGOING_CAPABILITIES: &[&str] = &[
     "kdeconnect.contacts.request_all_uids_timestamps",
     "kdeconnect.contacts.request_vcards_by_uid",
     "kdeconnect.findmyphone.request",
-    "kdeconnect.mousepad.keyboardstate",
-    "kdeconnect.mousepad.request",
     "kdeconnect.mpris",
     "kdeconnect.mpris.request",
     "kdeconnect.notification.request",
