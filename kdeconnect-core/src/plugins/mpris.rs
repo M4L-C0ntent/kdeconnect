@@ -9,6 +9,7 @@ use zbus::interface;
 use crate::{
     device::{Device, DeviceManager},
     protocol::{DeviceFile, DevicePayload, PacketPayloadTransferInfo, PacketType, ProtocolPacket},
+    transport::receive_payload,
 };
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -222,6 +223,42 @@ pub fn get_all_mpris_player_names() -> Vec<String> {
         Ok(players) => players.into_iter().map(|p| p.identity().to_string()).collect(),
         Err(_) => vec![],
     }
+}
+
+/// Downloads phone-sent album art (a `Mpris::TransferringArt` payload) to a
+/// local cache file and returns its path. Same TLS payload-transfer protocol
+/// as `ShareRequest::handle_file_request`, just a different destination.
+pub async fn download_album_art(
+    device: &Device,
+    player: &str,
+    album_art_url: &str,
+    info: &PacketPayloadTransferInfo,
+) -> anyhow::Result<String> {
+    let cache_dir = dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("kdeconnect/album_art");
+    tokio::fs::create_dir_all(&cache_dir).await?;
+
+    // Hash the remote URL so each distinct track gets its own file — avoids
+    // serving stale art from a path iced/cosmic may have already cached.
+    let hash = album_art_url
+        .bytes()
+        .fold(0u64, |h, b| h.wrapping_mul(31).wrapping_add(b as u64));
+    let sanitized_player: String = player
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let dest = cache_dir.join(format!(
+        "{}_{}_{:x}.art",
+        device.device_id.0, sanitized_player, hash
+    ));
+
+    let mut remote_addr = device.address;
+    remote_addr.set_port(info.port);
+
+    receive_payload(&device.device_id, &remote_addr, &dest).await?;
+
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 impl MprisRequest {
@@ -648,6 +685,14 @@ impl PhoneMprisPlayer {
                 zbus::zvariant::Value::new(length as i64 * 1000),
             );
         }
+        if let Some(ref art_path) = state.album_art_url {
+            let uri = if art_path.starts_with("file://") {
+                art_path.clone()
+            } else {
+                format!("file://{}", art_path)
+            };
+            metadata.insert("mpris:artUrl".to_string(), zbus::zvariant::Value::new(uri));
+        }
 
         metadata
     }
@@ -728,6 +773,30 @@ fn send_now_playing_request(
     });
 }
 
+/// Asks the phone to transfer the album art it advertised at `album_art_url`
+/// for the named player. The phone replies with a `Mpris::TransferringArt`
+/// payload carrying the actual image bytes.
+fn request_album_art(
+    core_tx: &mpsc::UnboundedSender<crate::event::CoreEvent>,
+    device_id: &crate::device::DeviceId,
+    player_name: &str,
+    album_art_url: &str,
+) {
+    let request = MprisRequest {
+        player: Some(player_name.to_string()),
+        album_art_url: Some(album_art_url.to_string()),
+        ..Default::default()
+    };
+    let packet = ProtocolPacket::new(
+        PacketType::MprisRequest,
+        serde_json::to_value(request).unwrap(),
+    );
+    let _ = core_tx.send(crate::event::CoreEvent::SendPacket {
+        device: device_id.clone(),
+        packet,
+    });
+}
+
 struct PhoneMprisRoot {
     device_name: String,
 }
@@ -773,6 +842,10 @@ pub fn expose_phone_mpris(
         // Keyed by "{device_id}_{player_name}". Stores the connection AND the
         // device_id directly so we never need to parse it back out of the key.
         let mut active_players: HashMap<String, PhonePlayerConnection> = HashMap::new();
+        // Tracks the last remote albumArtUrl we already asked each player to
+        // transfer, so a 5s now-playing refresh doesn't re-trigger a download
+        // for art we already have.
+        let mut requested_art: HashMap<String, String> = HashMap::new();
         // Poll every 5s for now-playing updates from the phone.
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
 
@@ -788,7 +861,7 @@ pub fn expose_phone_mpris(
                                         "Phone player list from {}: {:?}",
                                         device_id.0, player_list
                                     );
-                                    for player_name in player_list {
+                                    for player_name in &player_list {
                                         let request = MprisRequest {
                                             player: Some(player_name.clone()),
                                             request_now_playing: Some(true),
@@ -804,6 +877,25 @@ pub fn expose_phone_mpris(
                                             packet,
                                         });
                                     }
+
+                                    // The phone's list is authoritative — drop any player for
+                                    // this device that's no longer on it (app closed). Dropping
+                                    // the PhonePlayerConnection closes its dedicated D-Bus
+                                    // connection, which releases the bus name so the card
+                                    // disappears on the applet's next poll.
+                                    let still_present: HashSet<String> = player_list
+                                        .iter()
+                                        .map(|name| format!("{}_{}", device_id.0, name))
+                                        .collect();
+                                    let prefix = format!("{}_", device_id.0);
+                                    active_players.retain(|key, conn| {
+                                        conn.device_id != device_id
+                                            || !key.starts_with(&prefix)
+                                            || still_present.contains(key)
+                                    });
+                                    requested_art.retain(|key, _| {
+                                        !key.starts_with(&prefix) || still_present.contains(key)
+                                    });
                                 }
                                 // Phone sent state for one of its players — register or update.
                                 Mpris::Info(player_info) => {
@@ -812,16 +904,35 @@ pub fn expose_phone_mpris(
                                         device_id.0, player_info.player
                                     );
 
+                                    if let Some(ref remote_art) = player_info.album_art_url
+                                        && requested_art.get(&player_key) != Some(remote_art)
+                                    {
+                                        requested_art.insert(player_key.clone(), remote_art.clone());
+                                        request_album_art(
+                                            &core_tx,
+                                            &device_id,
+                                            &player_info.player,
+                                            remote_art,
+                                        );
+                                    }
+
                                     if let Some(player_conn) =
                                         active_players.get_mut(&player_key)
                                     {
                                         let old_is_playing =
                                             player_conn.player_state.read().await.is_playing;
+                                        // The phone's Info only ever carries its own remote
+                                        // URL, never our locally-downloaded path — keep
+                                        // whatever art we already resolved until the
+                                        // TransferringArt(false) arm below replaces it.
+                                        let resolved_art =
+                                            player_conn.player_state.read().await.album_art_url.clone();
 
                                         {
                                             let mut state =
                                                 player_conn.player_state.write().await;
                                             *state = player_info.clone();
+                                            state.album_art_url = resolved_art;
                                         }
 
                                         if old_is_playing != player_info.is_playing {
@@ -874,6 +985,34 @@ pub fn expose_phone_mpris(
                                                 );
                                             }
                                         }
+                                    }
+                                }
+                                // Our own download task finished — apply the resolved
+                                // local art path and notify any D-Bus MPRIS clients.
+                                Mpris::TransferringArt {
+                                    player,
+                                    album_art_url,
+                                    transferring_album_art: false,
+                                } => {
+                                    let player_key = format!("{}_{}", device_id.0, player);
+                                    if let Some(player_conn) = active_players.get_mut(&player_key) {
+                                        {
+                                            let mut state = player_conn.player_state.write().await;
+                                            state.album_art_url = Some(album_art_url.clone());
+                                        }
+                                        let obj_server = player_conn.connection.object_server();
+                                        if let Ok(iface_ref) = obj_server
+                                            .interface::<_, PhoneMprisPlayer>("/org/mpris/MediaPlayer2")
+                                            .await
+                                        {
+                                            let emitter = iface_ref.signal_emitter();
+                                            let iface = iface_ref.get().await;
+                                            let _ = iface.metadata_changed(&emitter).await;
+                                        }
+                                        tracing::debug!(
+                                            "Album art ready for {}: {}",
+                                            player_key, album_art_url
+                                        );
                                     }
                                 }
                                 _ => {}

@@ -242,6 +242,43 @@ impl PluginRegistry {
             PacketType::Mpris => {
                 if let Ok(mpris_packet) = serde_json::from_value::<Mpris>(body) {
                     info!("Received MPRIS packet: {:?}", mpris_packet);
+
+                    if let Mpris::TransferringArt {
+                        ref player,
+                        ref album_art_url,
+                        transferring_album_art: true,
+                    } = mpris_packet
+                        && let Some(info) = payload_info
+                    {
+                        let device = device.clone();
+                        let player = player.clone();
+                        let album_art_url = album_art_url.clone();
+                        let art_tx = mpris_connection_tx.clone();
+                        tokio::spawn(async move {
+                            match plugins::mpris::download_album_art(
+                                &device,
+                                &player,
+                                &album_art_url,
+                                &info,
+                            )
+                            .await
+                            {
+                                Ok(local_path) => {
+                                    let ready = Mpris::TransferringArt {
+                                        player,
+                                        album_art_url: local_path,
+                                        transferring_album_art: false,
+                                    };
+                                    let _ = art_tx.send(ConnectionEvent::Mpris((
+                                        device.device_id.clone(),
+                                        ready,
+                                    )));
+                                }
+                                Err(e) => warn!("[mpris] album art download failed: {}", e),
+                            }
+                        });
+                    }
+
                     let mpris_event =
                         ConnectionEvent::Mpris((device.device_id.clone(), mpris_packet));
                     let _ = connection_tx.send(mpris_event.clone());

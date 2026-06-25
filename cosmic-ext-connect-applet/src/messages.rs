@@ -53,6 +53,12 @@ pub enum Message {
     // MPRIS events from phone - store as JSON value to avoid direct dependency
     MprisReceived(String, serde_json::Value), // device_id, mpris_data
 
+    // Media section — read straight from each phone's MPRIS D-Bus service.
+    MprisSnapshot(HashMap<String, crate::models::NowPlaying>), // bus_name -> state
+    MprisPlayPause(String),                                    // bus_name
+    MprisNext(String),                                         // bus_name
+    MprisPrevious(String),                                     // bus_name
+
     // Run Command
     RequestRunCommands(String),              // device_id
     RunCommandsReceived(String, String),     // device_id, commands_json
