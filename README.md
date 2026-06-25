@@ -10,7 +10,7 @@
 ---
 
 <details>
-<summary>✅ Supported Features</summary>
+<summary>✅ Supported Plugins</summary>
 
 - Device Pairing / Unpairing
 - Battery Monitor
@@ -27,15 +27,16 @@
 - Plugin Enable / Disable per device
 - System Volume (Partial support - May not work on certain devices - Known Mobile App Bug)
 - Telephony (Know bug - Media does not resume when Ending/Canceling Call)
+- SFTP / Browse Device
 
 </details>
 
 <details>
-<summary>🚧 Features Not Yet Supported</summary>
+<summary>🚧 Plugins Not Yet Supported</summary>
 
+The following plugins require RTP which is not yet supported on the COSMIC Desktop.
 - MousePad / Remote Input
 - Presenter Mode
-- SFTP / Browse Device
 - Virtual Display
 
 </details>

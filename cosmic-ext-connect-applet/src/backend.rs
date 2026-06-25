@@ -107,7 +107,7 @@ fn merge_device(
         has_findmyphone: true,
         has_share: true,
         share_progress: existing.as_ref().and_then(|e| e.share_progress),
-        has_sftp: false,
+        has_sftp: true,
         has_mpris: false,
         has_remote_keyboard: false,
         has_presenter: false,
@@ -222,9 +222,16 @@ pub async fn send_clipboard(device_id: String, content: String) -> Result<()> {
     dbus_client!(g).send_clipboard(&device_id, &content).await
 }
 
-pub async fn browse_device_filesystem(_device_id: String) -> Result<()> {
-    warn!("Browse filesystem not yet implemented");
-    Ok(())
+pub async fn browse_device_filesystem(device_id: String) -> Result<()> {
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.browse_device(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
+    let g = CLIENT.lock().await;
+    dbus_client!(g).browse_device(&device_id).await
 }
 
 pub async fn accept_pairing(device_id: String) -> Result<()> {

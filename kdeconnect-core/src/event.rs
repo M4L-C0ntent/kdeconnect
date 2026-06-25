@@ -77,4 +77,7 @@ pub enum ConnectionEvent {
     PairingRequested((DeviceId, String)),
     /// Phone sent its command list via kdeconnect.runcommand.
     RunCommandListReceived((DeviceId, Vec<RemoteCommand>)),
+    /// SFTP browse (mount/preflight) failed for a device. Payload is
+    /// (device_id, user-facing message).
+    SftpBrowseFailed((DeviceId, String)),
 }

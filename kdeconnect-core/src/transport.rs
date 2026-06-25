@@ -532,6 +532,7 @@ async fn filtered_identity_for_device(device_id: &str) -> Identity {
         ("notification",        &["kdeconnect.notification"],                                               &["kdeconnect.notification.request"]),
         ("ping",                &["kdeconnect.ping"],                                                       &["kdeconnect.ping"]),
         ("runcommand",          &["kdeconnect.runcommand.request"],                                         &["kdeconnect.runcommand"]),
+        ("sftp",                &["kdeconnect.sftp"],                                                       &["kdeconnect.sftp.request"]),
         ("share",               &["kdeconnect.share.request"],                                              &["kdeconnect.share.request", "kdeconnect.share.request.update"]),
         ("sms",                 &["kdeconnect.sms.messages", "kdeconnect.sms.attachment_file"],             &["kdeconnect.sms.request",
                                                                                                               "kdeconnect.sms.request_conversations",

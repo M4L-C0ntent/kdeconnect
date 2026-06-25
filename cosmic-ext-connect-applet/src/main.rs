@@ -25,6 +25,10 @@ pub struct KdeConnectApplet {
     accent_color: cosmic::iced::Color,
     /// device_id -> has unread SMS, for the quick-actions menu indicator.
     unread_sms: HashMap<String, bool>,
+    /// Set when an action fails in a way the user needs to know about and
+    /// can act on (e.g. browse-device preflight checks); shown as a
+    /// dismissible banner in the popup.
+    error_banner: Option<String>,
 }
 
 impl KdeConnectApplet {
@@ -81,6 +85,7 @@ impl cosmic::Application for KdeConnectApplet {
             accent_color: theme::try_load_cosmic_accent()
                 .unwrap_or(theme::FALLBACK_TEAL),
             unread_sms: HashMap::new(),
+            error_banner: None,
         };
 
         (app, Task::none())
@@ -194,11 +199,20 @@ impl cosmic::Application for KdeConnectApplet {
             Message::BrowseDevice(ref device_id) => {
                 let id = device_id.clone();
                 return Task::perform(
-                    async move {
-                        backend::browse_device_filesystem(id).await.ok();
+                    async move { backend::browse_device_filesystem(id).await },
+                    |result| match result {
+                        Ok(()) => cosmic::Action::App(Message::RefreshDevices),
+                        Err(e) => cosmic::Action::App(Message::BrowseDeviceFailed(e.to_string())),
                     },
-                    |_| cosmic::Action::App(Message::RefreshDevices),
                 );
+            }
+            Message::BrowseDeviceFailed(message) => {
+                self.error_banner = Some(message);
+                return Task::none();
+            }
+            Message::DismissError => {
+                self.error_banner = None;
+                return Task::none();
             }
             Message::PairDevice(ref device_id) => {
                 let id = device_id.clone();
@@ -403,6 +417,7 @@ impl cosmic::Application for KdeConnectApplet {
             Some(&self.pairing_requests),
             self.accent_color,
             &self.unread_sms,
+            self.error_banner.as_ref(),
         )
     }
 
@@ -438,6 +453,9 @@ impl cosmic::Application for KdeConnectApplet {
                             }
                             kdeconnect_dbus_client::ServiceEvent::RunCommandListReceived(id, commands_json) => {
                                 yield Message::RunCommandsReceived(id, commands_json);
+                            }
+                            kdeconnect_dbus_client::ServiceEvent::BrowseFailed(_id, message) => {
+                                yield Message::BrowseDeviceFailed(message);
                             }
                             kdeconnect_dbus_client::ServiceEvent::DeviceConnected(id, _)
                             | kdeconnect_dbus_client::ServiceEvent::DevicePaired(id, _)
