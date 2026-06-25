@@ -15,6 +15,7 @@ pub fn create_popup_view<'a>(
     pairing_requests: Option<&'a HashMap<String, String>>,
     accent_color: cosmic::iced::Color,
     unread_sms: &'a HashMap<String, bool>,
+    error_banner: Option<&'a String>,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::active().cosmic().spacing;
     let mut content = widget::Column::new()
@@ -36,6 +37,34 @@ pub fn create_popup_view<'a>(
     );
 
     content = content.push(widget::divider::horizontal::default());
+
+    // Dismissible error banner — surfaces failures (e.g. browse-device
+    // preflight checks) that used to be silently dropped.
+    if let Some(message) = error_banner {
+        content = content.push(
+            widget::container(
+                widget::Row::new()
+                    .push(widget::text(message).size(12).width(Length::Fill))
+                    .push(
+                        widget::button::icon(widget::icon::from_name("window-close-symbolic").handle())
+                            .on_press(Message::DismissError),
+                    )
+                    .spacing(spacing.space_xs)
+                    .align_y(Alignment::Center),
+            )
+            .padding(spacing.space_s)
+            .style(|_: &cosmic::Theme| cosmic::widget::container::Style {
+                border: cosmic::iced::Border {
+                    color: cosmic::iced::Color::from_rgb(0.8, 0.2, 0.2),
+                    width: 1.5,
+                    radius: 8.0.into(),
+                },
+                ..Default::default()
+            })
+            .class(cosmic::theme::Container::Card)
+            .width(Length::Fill),
+        );
+    }
 
     // Pairing requests — sourced from the applet's live pairing_requests map,
     // not from Device.pairing_requests which is never populated via D-Bus.

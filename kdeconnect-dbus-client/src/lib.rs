@@ -38,6 +38,7 @@ pub enum ServiceEvent {
     BatteryReceived(String, i32, bool),        // device_id, level, is_charging
     ConnectivityReceived(String, i32),         // device_id, signal_strength
     RunCommandListReceived(String, String),    // device_id, commands_json
+    BrowseFailed(String, String),              // device_id, message
 }
 
 /// D-Bus proxy for daemon interface
@@ -54,6 +55,7 @@ trait Daemon {
     async fn send_files(&self, device_id: &str, files: Vec<String>) -> zbus::Result<()>;
     async fn send_clipboard(&self, device_id: &str, content: &str) -> zbus::Result<()>;
     async fn ring_device(&self, device_id: &str) -> zbus::Result<()>;
+    async fn browse_device(&self, device_id: &str) -> zbus::Result<()>;
     async fn set_plugin_enabled(
         &self,
         device_id: &str,
@@ -107,6 +109,9 @@ trait Daemon {
         device_id: String,
         commands_json: String,
     ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn browse_failed(&self, device_id: String, message: String) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for SMS interface
@@ -200,6 +205,11 @@ impl KdeConnectClient {
     /// Ring a device (findmyphone)
     pub async fn ring_device(&self, device_id: &str) -> Result<()> {
         Ok(self.daemon_proxy.ring_device(device_id).await?)
+    }
+
+    /// Ask a device to start its SFTP server so we can browse its filesystem
+    pub async fn browse_device(&self, device_id: &str) -> Result<()> {
+        Ok(self.daemon_proxy.browse_device(device_id).await?)
     }
 
     /// Enable or disable a plugin for a device
@@ -457,6 +467,23 @@ impl KdeConnectClient {
                 }
             });
 
+        let browse_failed = self
+            .daemon_proxy
+            .receive_browse_failed()
+            .await?
+            .filter_map(|s| async move {
+                match s.args() {
+                    Ok(args) => Some(ServiceEvent::BrowseFailed(
+                        args.device_id.clone(),
+                        args.message.clone(),
+                    )),
+                    Err(e) => {
+                        error!("Failed to parse BrowseFailed signal: {:?}", e);
+                        None
+                    }
+                }
+            });
+
         Ok(Box::pin(select_all(vec![
             Box::pin(connected) as futures::stream::BoxStream<'static, ServiceEvent>,
             Box::pin(paired),
@@ -468,6 +495,7 @@ impl KdeConnectClient {
             Box::pin(battery),
             Box::pin(connectivity),
             Box::pin(run_command_list),
+            Box::pin(browse_failed),
         ])))
     }
 

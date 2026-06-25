@@ -19,6 +19,7 @@ use crate::{
         clipboard::Clipboard,
         connectivity_report::ConnectivityReport,
         mpris::{Mpris, MprisRequest},
+        sftp::SftpInfo,
         systemvolume::SystemVolumeRequest,
         telephony::TelephonyPacket,
     },
@@ -297,6 +298,21 @@ impl PluginRegistry {
             PacketType::SystemVolumeRequest => {
                 if let Ok(req) = serde_json::from_value::<SystemVolumeRequest>(body) {
                     req.handle(&device).await;
+                }
+            }
+            PacketType::Sftp => {
+                if let Ok(info) = serde_json::from_value::<SftpInfo>(body) {
+                    let device_id = device.device_id.clone();
+                    let connection_tx = connection_tx.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = info.browse(&device_id.0).await {
+                            warn!("[sftp] browse failed: {}", e);
+                            let _ = connection_tx
+                                .send(ConnectionEvent::SftpBrowseFailed((device_id, e.to_string())));
+                        }
+                    });
+                } else {
+                    warn!("[sftp] failed to parse kdeconnect.sftp packet");
                 }
             }
             PacketType::Telephony => {
