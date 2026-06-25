@@ -198,6 +198,16 @@ impl DaemonInterface {
         Ok(())
     }
 
+    /// Ask a device to start its SFTP server so we can browse its filesystem
+    async fn browse_device(&self, device_id: String) -> zbus::fdo::Result<()> {
+        info!("D-Bus: BrowseDevice called for {}", device_id);
+        let packet = ProtocolPacket::new(PacketType::SftpRequest, json!({ "startBrowsing": true }));
+        self.event_sender
+            .send(AppEvent::SendPacket(DeviceId(device_id), packet))
+            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
+        Ok(())
+    }
+
     /// Enable or disable a plugin for a device.
     /// Changes take effect immediately and are persisted across restarts.
     async fn set_plugin_enabled(
@@ -314,6 +324,15 @@ impl DaemonInterface {
         signal_emitter: &SignalEmitter<'_>,
         device_id: String,
         signal_strength: i32,
+    ) -> zbus::Result<()>;
+
+    /// Signal: Browse-device (SFTP mount) failed. `message` names the
+    /// actual cause (missing sshfs, revoked Flatpak permission, etc.).
+    #[zbus(signal)]
+    async fn browse_failed(
+        signal_emitter: &SignalEmitter<'_>,
+        device_id: String,
+        message: String,
     ) -> zbus::Result<()>;
 
     /// Execute a remote command on a device by key
@@ -1071,6 +1090,28 @@ impl KdeConnectService {
                     event_type: "run_command_list_received".into(),
                     device_id: device_id.0,
                     commands_json: Some(commands_json),
+                    ..Default::default()
+                });
+            }
+            ConnectionEvent::SftpBrowseFailed((device_id, message)) => {
+                warn!("[dbus] BrowseFailed for {}: {}", device_id.0, message);
+
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, DaemonInterface>(DAEMON_PATH)
+                    .await?;
+                DaemonInterface::browse_failed(
+                    iface_ref.signal_emitter(),
+                    device_id.0.clone(),
+                    message.clone(),
+                )
+                .await?;
+                debug!("BrowseFailed D-Bus signal emitted");
+
+                let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                    event_type: "browse_failed".into(),
+                    device_id: device_id.0,
+                    message: Some(message),
                     ..Default::default()
                 });
             }

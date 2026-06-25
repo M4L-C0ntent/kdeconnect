@@ -17,6 +17,8 @@ pub enum Message {
     UnpairDevice(String),
     RingDevice(String),
     BrowseDevice(String),
+    BrowseDeviceFailed(String),
+    DismissError,
     SendFiles(String),
     SendSMS(String),
     ShareClipboard(String),

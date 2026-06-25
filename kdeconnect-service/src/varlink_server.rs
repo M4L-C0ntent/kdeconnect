@@ -6,7 +6,7 @@ use kdeconnect_varlink::iface::{
     self, BatteryState, Device, VarlinkInterface,
     Call_ListDevices, Call_PairDevice, Call_UnpairDevice, Call_SendPing,
     Call_SendFiles, Call_SendClipboard, Call_RunCommand,
-    Call_RingDevice, Call_BroadcastIdentity, Call_RequestRunCommands,
+    Call_RingDevice, Call_BrowseDevice, Call_BroadcastIdentity, Call_RequestRunCommands,
     Call_SetPluginEnabled, Call_GetPluginEnabled, Call_GetDisabledPlugins,
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
     Call_RequestConversations, Call_RequestConversation, Call_SendSms,
@@ -108,6 +108,12 @@ impl VarlinkInterface for KdeConnectVarlinkService {
 
     async fn ring_device(&self, call: &mut dyn Call_RingDevice, device_id: String) -> varlink::Result<()> {
         let packet = ProtocolPacket::new(PacketType::FindMyPhoneRequest, json!({}));
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
+        call.reply()
+    }
+
+    async fn browse_device(&self, call: &mut dyn Call_BrowseDevice, device_id: String) -> varlink::Result<()> {
+        let packet = ProtocolPacket::new(PacketType::SftpRequest, json!({ "startBrowsing": true }));
         let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
         call.reply()
     }
