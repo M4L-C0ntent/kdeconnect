@@ -4,7 +4,7 @@ extern crate cosmic_ext_connect_applet;
 use cosmic_ext_connect_applet::{backend, messages, models, portal, ui};
 
 use messages::Message;
-use models::Device;
+use models::{Device, NowPlaying};
 
 use cosmic::app::Core;
 use cosmic::iced::window::Id as SurfaceId;
@@ -29,6 +29,9 @@ pub struct KdeConnectApplet {
     /// can act on (e.g. browse-device preflight checks); shown as a
     /// dismissible banner in the popup.
     error_banner: Option<String>,
+    /// Media section state, keyed by MPRIS D-Bus bus name. Refreshed by
+    /// `backend::mpris_subscription`.
+    now_playing: HashMap<String, NowPlaying>,
 }
 
 impl KdeConnectApplet {
@@ -86,6 +89,7 @@ impl cosmic::Application for KdeConnectApplet {
                 .unwrap_or(theme::FALLBACK_TEAL),
             unread_sms: HashMap::new(),
             error_banner: None,
+            now_playing: HashMap::new(),
         };
 
         (app, Task::none())
@@ -335,6 +339,30 @@ impl cosmic::Application for KdeConnectApplet {
             Message::MprisReceived(device_id, mpris_data) => {
                 debug!("MPRIS from {}: {:?}", device_id, mpris_data);
             }
+            Message::MprisSnapshot(snapshot) => {
+                self.now_playing = snapshot;
+            }
+            Message::MprisPlayPause(ref bus_name) => {
+                let bus_name = bus_name.clone();
+                return Task::perform(
+                    backend::mpris_control(bus_name, backend::MprisControlAction::PlayPause),
+                    |_| cosmic::Action::App(Message::RefreshDevices),
+                );
+            }
+            Message::MprisNext(ref bus_name) => {
+                let bus_name = bus_name.clone();
+                return Task::perform(
+                    backend::mpris_control(bus_name, backend::MprisControlAction::Next),
+                    |_| cosmic::Action::App(Message::RefreshDevices),
+                );
+            }
+            Message::MprisPrevious(ref bus_name) => {
+                let bus_name = bus_name.clone();
+                return Task::perform(
+                    backend::mpris_control(bus_name, backend::MprisControlAction::Previous),
+                    |_| cosmic::Action::App(Message::RefreshDevices),
+                );
+            }
             Message::OpenSettings => {
                 std::process::Command::new("cosmic-ext-connect-settings")
                     .spawn()
@@ -418,6 +446,7 @@ impl cosmic::Application for KdeConnectApplet {
             self.accent_color,
             &self.unread_sms,
             self.error_banner.as_ref(),
+            &self.now_playing,
         )
     }
 
@@ -432,6 +461,7 @@ impl cosmic::Application for KdeConnectApplet {
                 .map(|_| Message::RefreshDevices),
             backend::filetransfer_subscription(),
             backend::service_watcher_subscription(),
+            backend::mpris_subscription(),
             // D-Bus event stream — delivers pairing requests and device state
             // changes in real time without waiting for the 10s poll.
             Subscription::run(|| {

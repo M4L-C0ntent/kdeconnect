@@ -78,3 +78,22 @@ impl Device {
         })
     }
 }
+
+/// Now-playing state for a single phone media player, read directly from its
+/// `org.mpris.MediaPlayer2.KDEConnect_*` D-Bus service (the same standard
+/// MPRIS interface COSMIC's own media widget already talks to). Keyed by
+/// that bus name in `KdeConnectApplet::now_playing`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NowPlaying {
+    /// "KDE Connect - <player>", from the service's Identity property.
+    pub identity: String,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub is_playing: bool,
+    pub can_play: bool,
+    pub can_pause: bool,
+    pub can_go_next: bool,
+    pub can_go_previous: bool,
+    /// Local filesystem path to downloaded album art, if any.
+    pub art_path: Option<String>,
+}

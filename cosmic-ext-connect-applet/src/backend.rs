@@ -9,7 +9,7 @@ use std::{any::TypeId, collections::HashMap};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-use crate::models::Device;
+use crate::models::{Device, NowPlaying};
 
 lazy_static::lazy_static! {
     static ref CLIENT: Arc<Mutex<Option<Arc<KdeConnectClient>>>> =
@@ -525,4 +525,180 @@ pub fn filetransfer_subscription() -> Subscription<crate::messages::Message> {
             }
         }
     })
+}
+
+// ============================================================================
+// Media section — generic MPRIS client of org.mpris.MediaPlayer2.KDEConnect_*
+// ============================================================================
+//
+// kdeconnect-core already registers each phone player as a standard
+// org.mpris.MediaPlayer2 D-Bus service (so COSMIC's own media widget can
+// control it) — see `register_phone_player` in kdeconnect-core. Reusing that
+// existing, working interface means the applet needs zero new IPC of its
+// own: just be another MPRIS client, same as the system widget.
+
+const MPRIS_BUS_PREFIX: &str = "org.mpris.MediaPlayer2.KDEConnect_";
+
+#[zbus::proxy(interface = "org.mpris.MediaPlayer2", default_path = "/org/mpris/MediaPlayer2")]
+trait MprisRoot {
+    #[zbus(property)]
+    fn identity(&self) -> zbus::Result<String>;
+}
+
+#[zbus::proxy(
+    interface = "org.mpris.MediaPlayer2.Player",
+    default_path = "/org/mpris/MediaPlayer2"
+)]
+trait MprisPlayer {
+    fn play_pause(&self) -> zbus::Result<()>;
+    fn next(&self) -> zbus::Result<()>;
+    fn previous(&self) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn playback_status(&self) -> zbus::Result<String>;
+    #[zbus(property)]
+    fn can_play(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
+    fn can_pause(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
+    fn can_go_next(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
+    fn can_go_previous(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
+    fn metadata(&self) -> zbus::Result<HashMap<String, zbus::zvariant::OwnedValue>>;
+}
+
+async fn read_now_playing(connection: &zbus::Connection, bus_name: &str) -> Option<NowPlaying> {
+    let root = MprisRootProxy::builder(connection)
+        .destination(bus_name)
+        .ok()?
+        .build()
+        .await
+        .ok()?;
+    let identity = root
+        .identity()
+        .await
+        .unwrap_or_else(|_| bus_name.to_string());
+
+    let player = MprisPlayerProxy::builder(connection)
+        .destination(bus_name)
+        .ok()?
+        .build()
+        .await
+        .ok()?;
+
+    let is_playing = player
+        .playback_status()
+        .await
+        .map(|s| s == "Playing")
+        .unwrap_or(false);
+    let can_play = player.can_play().await.unwrap_or(true);
+    let can_pause = player.can_pause().await.unwrap_or(true);
+    let can_go_next = player.can_go_next().await.unwrap_or(true);
+    let can_go_previous = player.can_go_previous().await.unwrap_or(true);
+    let metadata = player.metadata().await.unwrap_or_default();
+
+    let title = metadata
+        .get("xesam:title")
+        .and_then(|v| String::try_from(v.clone()).ok());
+    let artist = metadata
+        .get("xesam:artist")
+        .and_then(|v| Vec::<String>::try_from(v.clone()).ok())
+        .and_then(|mut names| names.pop());
+    let art_path = metadata
+        .get("mpris:artUrl")
+        .and_then(|v| String::try_from(v.clone()).ok())
+        .map(|uri| uri.strip_prefix("file://").map(str::to_string).unwrap_or(uri));
+
+    Some(NowPlaying {
+        identity,
+        title,
+        artist,
+        is_playing,
+        can_play,
+        can_pause,
+        can_go_next,
+        can_go_previous,
+        art_path,
+    })
+}
+
+/// Polls every 2s for active KDE Connect MPRIS players and their state.
+/// Polling (rather than chasing PropertiesChanged across a dynamic set of
+/// bus names) keeps this simple and self-healing if a player disappears.
+pub fn mpris_subscription() -> Subscription<crate::messages::Message> {
+    struct MprisWatcher;
+
+    Subscription::run_with(TypeId::of::<MprisWatcher>(), |_| {
+        async_stream::stream! {
+            loop {
+                let snapshot = poll_now_playing().await;
+                yield crate::messages::Message::MprisSnapshot(snapshot);
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        }
+    })
+}
+
+async fn poll_now_playing() -> HashMap<String, NowPlaying> {
+    let mut snapshot = HashMap::new();
+
+    let Ok(connection) = zbus::Connection::session().await else {
+        return snapshot;
+    };
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(&connection).await else {
+        return snapshot;
+    };
+    let Ok(names) = dbus.list_names().await else {
+        return snapshot;
+    };
+
+    for name in names {
+        let name = name.to_string();
+        if !name.starts_with(MPRIS_BUS_PREFIX) {
+            continue;
+        }
+        if let Some(now_playing) = read_now_playing(&connection, &name).await {
+            snapshot.insert(name, now_playing);
+        }
+    }
+
+    snapshot
+}
+
+/// Sends a transport control to one phone player by calling the standard
+/// MPRIS method directly on its D-Bus service.
+pub async fn mpris_control(bus_name: String, action: MprisControlAction) {
+    let Ok(connection) = zbus::Connection::session().await else {
+        warn!("[mpris] no session bus connection for control action");
+        return;
+    };
+    let player = MprisPlayerProxy::builder(&connection)
+        .destination(bus_name.as_str())
+        .ok()
+        .map(|b| b.build());
+    let Some(player) = player else {
+        warn!("[mpris] failed to build player proxy for {}", bus_name);
+        return;
+    };
+    let Ok(player) = player.await else {
+        warn!("[mpris] failed to connect player proxy for {}", bus_name);
+        return;
+    };
+
+    let result = match action {
+        MprisControlAction::PlayPause => player.play_pause().await,
+        MprisControlAction::Next => player.next().await,
+        MprisControlAction::Previous => player.previous().await,
+    };
+    if let Err(e) = result {
+        warn!("[mpris] control action failed for {}: {:?}", bus_name, e);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MprisControlAction {
+    PlayPause,
+    Next,
+    Previous,
 }

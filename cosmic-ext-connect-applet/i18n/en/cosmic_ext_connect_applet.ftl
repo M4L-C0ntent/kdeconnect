@@ -14,6 +14,9 @@ devices-none-paired = No paired devices
 devices-offline = Offline
 devices-not-reachable = Device is not reachable
 
+# Media section (popup)
+media-header = Now Playing
+
 # Quick actions (popup)
 quick-actions-header = Quick Actions
 quick-actions-ping = Ping
