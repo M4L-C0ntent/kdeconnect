@@ -5,6 +5,8 @@ use cosmic::Element;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 
+use std::collections::HashMap;
+
 use super::actions::SmsMessage;
 use super::app::SmsWindow;
 use super::emoji::{EmojiCategory, is_emoji_char};
@@ -89,7 +91,11 @@ pub fn view_main(app: &SmsWindow) -> Element<'_, SmsMessage> {
     widget::Row::new()
         .spacing(0)
         .push(view_conversations_list(app, &spacing))
-        .push(widget::divider::vertical::default())
+        .push(
+            widget::container(widget::divider::vertical::default())
+                .height(Length::Fill)
+                .padding([0, spacing.space_xxs]),
+        )
         .push(view_thread_panel(app, &spacing))
         .into()
 }
@@ -219,6 +225,37 @@ fn get_filtered_contacts(app: &SmsWindow) -> Vec<(&String, &String)> {
     }
 }
 
+/// Hamburger menu (replaces the old header "File" menu) — same actions,
+/// triggered from an icon button instead of a text root so it fits in the
+/// sidebar's top row next to "Start Chat".
+fn view_sidebar_menu<'a>() -> Element<'a, SmsMessage> {
+    use cosmic::widget::{RcElementWrapper, menu};
+    use super::actions::SmsMenuAction;
+
+    let trigger = widget::button::icon(widget::icon::from_name("open-menu-symbolic").handle());
+
+    menu::bar(vec![menu::Tree::with_children(
+        RcElementWrapper::new(Element::from(trigger)),
+        menu::items(
+            &HashMap::new(),
+            vec![
+                menu::Item::Button(
+                    fl!("sms-menu-new-conversation"),
+                    Some(widget::icon::from_name("contact-new-symbolic").into()),
+                    SmsMenuAction::NewConversation,
+                ),
+                menu::Item::Divider,
+                menu::Item::Button(
+                    fl!("sms-menu-close"),
+                    Some(widget::icon::from_name("window-close-symbolic").into()),
+                    SmsMenuAction::CloseWindow,
+                ),
+            ],
+        ),
+    )])
+    .into()
+}
+
 /// Conversations list panel
 fn view_conversations_list<'a>(
     app: &'a SmsWindow,
@@ -226,22 +263,27 @@ fn view_conversations_list<'a>(
 ) -> Element<'a, SmsMessage> {
     let mut content = widget::Column::new().spacing(spacing.space_xs);
 
-    // Start Chat button
+    // Hamburger menu + Start Chat, right-aligned
     content = content.push(
         widget::container(
-            widget::button::suggested(fl!("sms-new-chat-start"))
-                .on_press(SmsMessage::OpenNewChatDialog)
-                .class(crate::theme::accent_filled_button(app.accent_color))
-                .width(Length::Fill),
+            widget::Row::new()
+                .push(view_sidebar_menu())
+                .push(widget::space::horizontal())
+                .push(
+                    widget::button::suggested(fl!("sms-new-chat-start"))
+                        .on_press(SmsMessage::OpenNewChatDialog)
+                        .class(crate::theme::accent_filled_button(app.accent_color)),
+                )
+                .align_y(Alignment::Center)
+                .spacing(spacing.space_xs),
         )
         .padding(spacing.space_s),
     );
 
     // Search input
     content = content.push(
-        widget::text_input(fl!("sms-search-placeholder"), &app.search_query)
-            .on_input(SmsMessage::UpdateSearch)
-            .padding(spacing.space_s),
+        widget::search_input(fl!("sms-search-placeholder"), &app.search_query)
+            .on_input(SmsMessage::UpdateSearch),
     );
     content = content.push(widget::divider::horizontal::default());
 
@@ -532,7 +574,7 @@ fn view_message_bubble<'a>(
             .max_width(500.0)
     } else {
         widget::container(message_content)
-            .class(cosmic::theme::Container::Transparent)
+            .class(cosmic::theme::Container::Secondary)
             .max_width(500.0)
     };
 

@@ -46,3 +46,24 @@ pub enum SmsMessage {
     /// this never touches the phone's actual messages or conversation.
     ConfirmDeleteConversation,
 }
+
+/// Actions exposed via the window's menu bar. Kept as a separate type
+/// (rather than reusing `SmsMessage` directly) because `menu::Item` needs
+/// `Copy + Eq + Hash` for key-bind lookups, which `SmsMessage` can't
+/// provide since it carries `String`/`Vec` payloads on other variants.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum SmsMenuAction {
+    NewConversation,
+    CloseWindow,
+}
+
+impl cosmic::widget::menu::action::MenuAction for SmsMenuAction {
+    type Message = SmsMessage;
+
+    fn message(&self) -> Self::Message {
+        match self {
+            SmsMenuAction::NewConversation => SmsMessage::OpenNewChatDialog,
+            SmsMenuAction::CloseWindow => SmsMessage::CloseWindow,
+        }
+    }
+}

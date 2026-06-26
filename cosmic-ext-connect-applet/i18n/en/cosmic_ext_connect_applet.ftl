@@ -92,6 +92,8 @@ plugin-telephony-desc = Show desktop notifications for incoming calls, missed ca
 # SMS app
 sms-window-title = SMS - { $device }
 sms-search-placeholder = Search conversations...
+sms-menu-new-conversation = New Conversation
+sms-menu-close = Close
 sms-no-conversations = No conversations
 sms-no-matching-conversations = No matching conversations
 sms-select-conversation = Select a conversation to view messages
