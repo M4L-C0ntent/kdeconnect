@@ -42,7 +42,7 @@
     <internet>always</internet>
   </recommends>
   <releases>
-    <release version="0.1.0" date="11.03.2026">
+    <release version="0.9.0" date="29.06.2026">
       <url type="details">https://github.com/hepp3n/kdeconnect</url>
       <description>
         <p>This is WORK IN PROGRESS release</p>

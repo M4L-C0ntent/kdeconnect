@@ -44,7 +44,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 urlencoding = "2.1"
 uuid = { version = "1.23.1", features = ["v4"] }
 varlink = { version = "13", features = ["tokio"] }
-zbus = "5.15"
+zbus = "5.16"
 libpulse-binding = { version = "2.30" }
 tracing-appender = "0.2"
 
