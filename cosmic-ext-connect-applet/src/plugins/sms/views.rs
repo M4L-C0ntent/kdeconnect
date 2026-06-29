@@ -5,8 +5,6 @@ use cosmic::Element;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
 
-use std::collections::HashMap;
-
 use super::actions::SmsMessage;
 use super::app::SmsWindow;
 use super::emoji::{EmojiCategory, is_emoji_char};
@@ -225,35 +223,13 @@ fn get_filtered_contacts(app: &SmsWindow) -> Vec<(&String, &String)> {
     }
 }
 
-/// Hamburger menu (replaces the old header "File" menu) — same actions,
-/// triggered from an icon button instead of a text root so it fits in the
-/// sidebar's top row next to "Start Chat".
-fn view_sidebar_menu<'a>() -> Element<'a, SmsMessage> {
-    use cosmic::widget::{RcElementWrapper, menu};
-    use super::actions::SmsMenuAction;
-
-    let trigger = widget::button::icon(widget::icon::from_name("open-menu-symbolic").handle());
-
-    menu::bar(vec![menu::Tree::with_children(
-        RcElementWrapper::new(Element::from(trigger)),
-        menu::items(
-            &HashMap::new(),
-            vec![
-                menu::Item::Button(
-                    fl!("sms-menu-new-conversation"),
-                    Some(widget::icon::from_name("contact-new-symbolic").into()),
-                    SmsMenuAction::NewConversation,
-                ),
-                menu::Item::Divider,
-                menu::Item::Button(
-                    fl!("sms-menu-close"),
-                    Some(widget::icon::from_name("window-close-symbolic").into()),
-                    SmsMenuAction::CloseWindow,
-                ),
-            ],
-        ),
-    )])
-    .into()
+/// Manually re-syncs conversations from the phone. `LoadConversations` was
+/// already fully wired in `update()` but had no UI entry point — everything
+/// else updates via the live event stream.
+fn view_refresh_button<'a>() -> Element<'a, SmsMessage> {
+    widget::button::icon(widget::icon::from_name("view-refresh-symbolic").handle())
+        .on_press(SmsMessage::LoadConversations)
+        .into()
 }
 
 /// Conversations list panel
@@ -267,7 +243,7 @@ fn view_conversations_list<'a>(
     content = content.push(
         widget::container(
             widget::Row::new()
-                .push(view_sidebar_menu())
+                .push(view_refresh_button())
                 .push(widget::space::horizontal())
                 .push(
                     widget::button::suggested(fl!("sms-new-chat-start"))
