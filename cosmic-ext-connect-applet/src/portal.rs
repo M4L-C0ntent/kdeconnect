@@ -56,6 +56,42 @@ pub async fn pick_files(
     Vec::new()
 }
 
+/// Opens a native "Save As" dialog and returns the chosen destination
+/// path, or `None` if cancelled/failed.
+pub async fn save_file(title: impl Into<String>, suggested_name: impl Into<String>) -> Option<String> {
+    let title_str = title.into();
+    let name_str = suggested_name.into();
+
+    match SelectedFiles::save_file()
+        .title(title_str.as_str())
+        .accept_label("Save")
+        .current_name(name_str.as_str())
+        .modal(true)
+        .send()
+        .await
+    {
+        Ok(request) => match request.response() {
+            Ok(files) => {
+                let path = files
+                    .uris()
+                    .first()
+                    .map(|u| uri_to_path(u.as_str()))
+                    .filter(|s| !s.is_empty());
+                debug!("Save destination chosen: {:?}", path);
+                path
+            }
+            Err(e) => {
+                error!("Failed to get save dialog response: {}", e);
+                None
+            }
+        },
+        Err(e) => {
+            error!("Failed to open save dialog: {}", e);
+            None
+        }
+    }
+}
+
 /// File filter for the portal file picker (for future use)
 #[derive(Debug, Clone)]
 #[allow(dead_code)]

@@ -88,6 +88,45 @@ pub(crate) async fn load_contacts_cache(device_id: &str) -> Option<HashMap<Strin
     }
 }
 
+/// Phone -> base64-encoded photo. Same shape and on-disk convention as
+/// the name cache above, just a different file and decoding deferred to
+/// the UI (these stay base64 the whole way through, same as SMS
+/// thumbnails — see `ConnectionEvent::ContactPhotosReceived`).
+async fn save_contact_photos_cache(device_id: &str, photos: &HashMap<String, String>) {
+    let path = device_cache_dir(device_id).join("contact_photos_cache.json");
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    match serde_json::to_string(photos) {
+        Ok(json) => {
+            if let Err(e) = tokio::fs::write(&path, json).await {
+                error!("Failed to save contact photos cache: {}", e);
+            } else {
+                debug!(
+                    "Contact photos cache saved ({} entries) for {}",
+                    photos.len(),
+                    device_id
+                );
+            }
+        }
+        Err(e) => error!("Failed to serialize contact photos for cache: {}", e),
+    }
+}
+
+pub(crate) async fn load_contact_photos_cache(device_id: &str) -> Option<HashMap<String, String>> {
+    let path = device_cache_dir(device_id).join("contact_photos_cache.json");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(json) => match serde_json::from_str(&json) {
+            Ok(map) => Some(map),
+            Err(e) => {
+                error!("Failed to parse contact photos cache: {}", e);
+                None
+            }
+        },
+        Err(_) => None,
+    }
+}
+
 async fn save_sms_cache(device_id: &str, messages_json: &str) {
     let path = device_cache_dir(device_id).join("sms_cache.json");
     if let Some(parent) = path.parent() {
@@ -445,20 +484,18 @@ impl SmsInterface {
         device_id: String,
         phone_number: String,
         message: String,
+        attachments: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         info!(
-            "D-Bus: SendSms called for {} to {}",
-            device_id, phone_number
+            "D-Bus: SendSms called for {} to {} ({} attachment(s))",
+            device_id, phone_number, attachments.len()
         );
-        let packet = ProtocolPacket::new(
-            PacketType::SmsRequest,
-            json!({
-                "sendSms": true,
-                "addresses": [{ "address": phone_number }],
-                "messageBody": message,
-                "version": 2
-            }),
-        );
+        let packet = kdeconnect_core::plugins::sms::build_send_packet(
+            &phone_number,
+            &message,
+            &attachments,
+        )
+        .await;
         self.event_sender
             .send(AppEvent::SendPacket(DeviceId(device_id), packet))
             .map_err(|e| {
@@ -469,11 +506,47 @@ impl SmsInterface {
         Ok(())
     }
 
+    /// Request the full-resolution file for one MMS attachment. The
+    /// result arrives asynchronously via `sms_attachment_received`.
+    async fn request_sms_attachment(
+        &self,
+        device_id: String,
+        part_id: i64,
+        unique_identifier: String,
+    ) -> zbus::fdo::Result<()> {
+        info!(
+            "D-Bus: RequestSmsAttachment called for {} part {}",
+            device_id, part_id
+        );
+        let packet = ProtocolPacket::new(
+            PacketType::SmsRequestAttachment,
+            json!({ "part_id": part_id, "unique_identifier": unique_identifier }),
+        );
+        self.event_sender
+            .send(AppEvent::SendPacket(DeviceId(device_id), packet))
+            .map_err(|e| {
+                error!("Failed to send packet: {}", e);
+                zbus::fdo::Error::Failed(e.to_string())
+            })?;
+        debug!("RequestSmsAttachment sent to core");
+        Ok(())
+    }
+
     /// Signal: SMS messages received
     #[zbus(signal)]
     async fn sms_messages_received(
         signal_emitter: &SignalEmitter<'_>,
         messages_json: String,
+    ) -> zbus::Result<()>;
+
+    /// Signal: a full-resolution MMS attachment finished downloading.
+    /// `filename` is the same `unique_identifier` the request was made
+    /// with — that's how the caller matches this back to a message.
+    #[zbus(signal)]
+    async fn sms_attachment_received(
+        signal_emitter: &SignalEmitter<'_>,
+        filename: String,
+        path: String,
     ) -> zbus::Result<()>;
 }
 
@@ -502,11 +575,28 @@ impl ContactsInterface {
         }
     }
 
+    /// Return cached contact photos from disk (phone -> base64) — no
+    /// phone required
+    async fn get_cached_contact_photos(&self, device_id: String) -> String {
+        match load_contact_photos_cache(&device_id).await {
+            Some(photos) => serde_json::to_string(&photos).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        }
+    }
+
     /// Signal: contacts received — JSON object mapping phone → name
     #[zbus(signal)]
     async fn contacts_received(
         signal_emitter: &SignalEmitter<'_>,
         contacts_json: String,
+    ) -> zbus::Result<()>;
+
+    /// Signal: contact photos received — JSON object mapping phone →
+    /// base64-encoded photo
+    #[zbus(signal)]
+    async fn contact_photos_received(
+        signal_emitter: &SignalEmitter<'_>,
+        photos_json: String,
     ) -> zbus::Result<()>;
 }
 
@@ -949,6 +1039,40 @@ impl KdeConnectService {
                 ContactsInterface::contacts_received(iface_ref.signal_emitter(), contacts_json)
                     .await?;
                 debug!("Contacts D-Bus signal emitted");
+            }
+            ConnectionEvent::ContactPhotosReceived(photos) => {
+                info!("Contact photos received: {} entries", photos.len());
+
+                if let Some(did) = current_device_id.lock().await.as_deref() {
+                    save_contact_photos_cache(did, &photos).await;
+                }
+
+                let photos_json = serde_json::to_string(&photos)?;
+
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, ContactsInterface>(CONTACTS_PATH)
+                    .await?;
+
+                ContactsInterface::contact_photos_received(iface_ref.signal_emitter(), photos_json)
+                    .await?;
+                debug!("ContactPhotosReceived D-Bus signal emitted");
+            }
+            ConnectionEvent::SmsAttachmentReceived((_device_id, filename, path)) => {
+                info!("SMS attachment received: {} -> {:?}", filename, path);
+
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, SmsInterface>(SMS_PATH)
+                    .await?;
+
+                SmsInterface::sms_attachment_received(
+                    iface_ref.signal_emitter(),
+                    filename,
+                    path.display().to_string(),
+                )
+                .await?;
+                debug!("SmsAttachmentReceived D-Bus signal emitted");
             }
             ConnectionEvent::UpdateTransferProgress(progress) => {
                 info!("Current transfer progress: {}%", progress);

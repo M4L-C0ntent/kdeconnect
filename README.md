@@ -27,7 +27,7 @@
 - Plugin Enable / Disable per device
 - System Volume (Partial support - May not work on certain devices - Known Mobile App Bug)
 - Telephony (Know bug - Media does not resume when Ending/Canceling Call)
-- SFTP / Browse Device
+- SFTP / Browse Device (Requires sshfs package installed)
 
 </details>
 

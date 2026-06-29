@@ -1054,6 +1054,7 @@ dependencies = [
  "futures-util",
  "i18n-embed",
  "i18n-embed-fl",
+ "image",
  "kdeconnect-core",
  "kdeconnect-dbus-client",
  "kdeconnect-varlink",

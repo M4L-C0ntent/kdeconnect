@@ -18,6 +18,34 @@ pub struct Conversation {
     pub unread: bool,
 }
 
+/// One MMS attachment on a message. Starts out with just a thumbnail
+/// preview (if the phone sent one); `full_path` is filled in later, once
+/// `RequestFullAttachment` round-trips through `request_attachment` /
+/// `attachment_file`.
+#[derive(Debug, Clone)]
+pub struct MessageAttachment {
+    pub part_id: i64,
+    /// Doubles as the filename used to correlate the async
+    /// `attachment_file` response back to this attachment — see
+    /// `kdeconnect_core::plugins::sms::SmsAttachmentFile`. Some
+    /// attachments don't have one, in which case the full file can't be
+    /// requested at all.
+    pub unique_identifier: Option<String>,
+    pub mime_type: String,
+    /// Decoded base64 preview, if the phone sent one (already
+    /// base64-decoded raw image bytes).
+    pub thumbnail: Option<Vec<u8>>,
+    /// Local path once the full-resolution file has been downloaded.
+    pub full_path: Option<std::path::PathBuf>,
+}
+
+impl MessageAttachment {
+    #[inline]
+    pub fn is_video(&self) -> bool {
+        self.mime_type.starts_with("video/")
+    }
+}
+
 /// Represents an individual SMS message.
 #[derive(Debug, Clone)]
 pub struct Message {
@@ -26,6 +54,7 @@ pub struct Message {
     pub body: String,
     pub address: String,
     pub date: i64,
+    pub attachments: Vec<MessageAttachment>,
     /// Message type: 1 = received, 2 = sent
     pub type_: i32,
     /// Used for future read receipt tracking

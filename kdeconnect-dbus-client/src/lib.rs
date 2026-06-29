@@ -39,6 +39,10 @@ pub enum ServiceEvent {
     ConnectivityReceived(String, i32),         // device_id, signal_strength
     RunCommandListReceived(String, String),    // device_id, commands_json
     BrowseFailed(String, String),              // device_id, message
+    /// (filename/unique_identifier, local file path)
+    SmsAttachmentReceived(String, String),
+    /// Phone -> base64-encoded photo
+    ContactPhotosReceived(HashMap<String, String>),
 }
 
 /// D-Bus proxy for daemon interface
@@ -128,11 +132,26 @@ trait Sms {
         device_id: &str,
         phone_number: &str,
         message: &str,
+        attachments: Vec<String>,
     ) -> zbus::Result<()>;
     async fn get_cached_sms(&self, device_id: &str) -> zbus::Result<String>;
+    /// Requests the full-resolution file for one MMS attachment. The
+    /// result arrives later via `sms_attachment_received`, since the
+    /// phone fetches and transfers it asynchronously.
+    async fn request_sms_attachment(
+        &self,
+        device_id: &str,
+        part_id: i64,
+        unique_identifier: &str,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn sms_messages_received(&self, messages_json: String) -> zbus::Result<()>;
+
+    /// `filename` is the same `unique_identifier` the request was made
+    /// with — that's how the caller matches this back to a message.
+    #[zbus(signal)]
+    async fn sms_attachment_received(&self, filename: String, path: String) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for Contacts interface
@@ -144,9 +163,13 @@ trait Sms {
 trait Contacts {
     async fn request_contacts(&self, device_id: &str) -> zbus::Result<()>;
     async fn get_cached_contacts(&self, device_id: &str) -> zbus::Result<String>;
+    async fn get_cached_contact_photos(&self, device_id: &str) -> zbus::Result<String>;
 
     #[zbus(signal)]
     async fn contacts_received(&self, contacts_json: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn contact_photos_received(&self, photos_json: String) -> zbus::Result<()>;
 }
 
 /// Main client for KDE Connect service
@@ -270,22 +293,40 @@ impl KdeConnectClient {
             .await?)
     }
 
-    /// Send an SMS message
+    /// Send an SMS message, optionally with file attachments (MMS). Each
+    /// entry in `attachments` is a local file path; the service reads and
+    /// base64-encodes them before sending.
     pub async fn send_sms(
         &self,
         device_id: &str,
         phone_number: &str,
         message: &str,
+        attachments: Vec<String>,
     ) -> Result<()> {
         Ok(self
             .sms_proxy
-            .send_sms(device_id, phone_number, message)
+            .send_sms(device_id, phone_number, message, attachments)
             .await?)
     }
 
     /// Fetch cached SMS — in-memory in service, disk fallback, empty string if neither
     pub async fn get_cached_sms(&self, device_id: &str) -> Result<String> {
         Ok(self.sms_proxy.get_cached_sms(device_id).await?)
+    }
+
+    /// Requests the full-resolution file for one MMS attachment. The
+    /// download happens asynchronously — listen for
+    /// `ServiceEvent::SmsAttachmentReceived` for the result.
+    pub async fn request_sms_attachment(
+        &self,
+        device_id: &str,
+        part_id: i64,
+        unique_identifier: &str,
+    ) -> Result<()> {
+        Ok(self
+            .sms_proxy
+            .request_sms_attachment(device_id, part_id, unique_identifier)
+            .await?)
     }
 
     /// Manually request contacts sync for a device
@@ -296,6 +337,11 @@ impl KdeConnectClient {
     /// Get cached contacts as a raw JSON string (phone → name map)
     pub async fn get_cached_contacts(&self, device_id: &str) -> Result<String> {
         Ok(self.contacts_proxy.get_cached_contacts(device_id).await?)
+    }
+
+    /// Get cached contact photos as a raw JSON string (phone → base64)
+    pub async fn get_cached_contact_photos(&self, device_id: &str) -> Result<String> {
+        Ok(self.contacts_proxy.get_cached_contact_photos(device_id).await?)
     }
 
     /// Create a stream of service events
@@ -484,6 +530,41 @@ impl KdeConnectClient {
                 }
             });
 
+        let attachment = self
+            .sms_proxy
+            .receive_sms_attachment_received()
+            .await?
+            .filter_map(|s| async move {
+                match s.args() {
+                    Ok(args) => Some(ServiceEvent::SmsAttachmentReceived(
+                        args.filename.clone(),
+                        args.path.clone(),
+                    )),
+                    Err(e) => {
+                        error!("Failed to parse SmsAttachmentReceived signal: {:?}", e);
+                        None
+                    }
+                }
+            });
+
+        let contact_photos = self
+            .contacts_proxy
+            .receive_contact_photos_received()
+            .await?
+            .filter_map(|s| async move {
+                match s.args() {
+                    Ok(args) => {
+                        let map: HashMap<String, String> =
+                            serde_json::from_str(&args.photos_json).unwrap_or_default();
+                        Some(ServiceEvent::ContactPhotosReceived(map))
+                    }
+                    Err(e) => {
+                        error!("Failed to parse ContactPhotosReceived signal: {:?}", e);
+                        None
+                    }
+                }
+            });
+
         Ok(Box::pin(select_all(vec![
             Box::pin(connected) as futures::stream::BoxStream<'static, ServiceEvent>,
             Box::pin(paired),
@@ -496,6 +577,8 @@ impl KdeConnectClient {
             Box::pin(connectivity),
             Box::pin(run_command_list),
             Box::pin(browse_failed),
+            Box::pin(attachment),
+            Box::pin(contact_photos),
         ])))
     }
 

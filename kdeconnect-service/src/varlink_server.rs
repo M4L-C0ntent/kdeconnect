@@ -10,7 +10,8 @@ use kdeconnect_varlink::iface::{
     Call_SetPluginEnabled, Call_GetPluginEnabled, Call_GetDisabledPlugins,
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
     Call_RequestConversations, Call_RequestConversation, Call_SendSms,
-    Call_GetCachedSms, Call_RequestContacts, Call_GetCachedContacts,
+    Call_GetCachedSms, Call_RequestContacts, Call_GetCachedContacts, Call_RequestSmsAttachment,
+    Call_GetCachedContactPhotos,
 };
 use kdeconnect_varlink::socket_address;
 use kdeconnect_core::{PacketType, ProtocolPacket, device::DeviceId, event::AppEvent};
@@ -184,17 +185,11 @@ impl VarlinkInterface for KdeConnectVarlinkService {
 
     async fn send_sms(
         &self, call: &mut dyn Call_SendSms,
-        device_id: String, phone_number: String, message: String,
+        device_id: String, phone_number: String, message: String, attachments: Vec<String>,
     ) -> varlink::Result<()> {
-        let packet = ProtocolPacket::new(
-            PacketType::SmsRequest,
-            json!({
-                "sendSms": true,
-                "addresses": [{ "address": phone_number }],
-                "messageBody": message,
-                "version": 2
-            }),
-        );
+        let packet =
+            kdeconnect_core::plugins::sms::build_send_packet(&phone_number, &message, &attachments)
+                .await;
         let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
         call.reply()
     }
@@ -218,6 +213,28 @@ impl VarlinkInterface for KdeConnectVarlinkService {
             None => "{}".to_string(),
         };
         call.reply(json)
+    }
+
+    async fn get_cached_contact_photos(
+        &self, call: &mut dyn Call_GetCachedContactPhotos, device_id: String,
+    ) -> varlink::Result<()> {
+        let json = match crate::dbus_interface::load_contact_photos_cache(&device_id).await {
+            Some(photos) => serde_json::to_string(&photos).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        };
+        call.reply(json)
+    }
+
+    async fn request_sms_attachment(
+        &self, call: &mut dyn Call_RequestSmsAttachment,
+        device_id: String, part_id: i64, unique_identifier: String,
+    ) -> varlink::Result<()> {
+        let packet = ProtocolPacket::new(
+            PacketType::SmsRequestAttachment,
+            json!({ "part_id": part_id, "unique_identifier": unique_identifier }),
+        );
+        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
+        call.reply()
     }
 
     // DORMANT: varlink_generator's async codegen doesn't support streaming

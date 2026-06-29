@@ -1,5 +1,5 @@
 use crate::messages::Message;
-use crate::models::Device;
+use crate::models::{Device, NowPlaying};
 use cosmic::app::Core;
 use cosmic::iced::{Alignment, Length};
 use cosmic::{Element, widget};
@@ -16,6 +16,7 @@ pub fn create_popup_view<'a>(
     accent_color: cosmic::iced::Color,
     unread_sms: &'a HashMap<String, bool>,
     error_banner: Option<&'a String>,
+    now_playing: &'a HashMap<String, NowPlaying>,
 ) -> Element<'a, Message> {
     let spacing = cosmic::theme::active().cosmic().spacing;
     let mut content = widget::Column::new()
@@ -156,6 +157,30 @@ pub fn create_popup_view<'a>(
         for device in paired_devices {
             let device_unread = unread_sms.get(&device.id).copied().unwrap_or(false);
             content = content.push(create_device_card(device, &spacing, expanded_device, accent_color, device_unread));
+        }
+    }
+
+    // Media section — one card per active, actually-controllable phone
+    // player, at the bottom. Players that advertise none of the four
+    // transport controls (e.g. some browser tabs' media notifications)
+    // are skipped entirely rather than shown as a box of dead buttons.
+    let mut players: Vec<(&String, &NowPlaying)> = now_playing
+        .iter()
+        .filter(|(_, p)| p.can_play || p.can_pause || p.can_go_next || p.can_go_previous)
+        .collect();
+    players.sort_by(|a, b| a.1.identity.cmp(&b.1.identity));
+
+    if !players.is_empty() {
+        content = content.push(widget::divider::horizontal::default());
+        content = content.push(
+            widget::text(fl!("media-header"))
+                .size(14)
+                .font(cosmic::font::bold())
+                .class(cosmic::theme::Text::Color(accent_color)),
+        );
+
+        for (bus_name, player) in players {
+            content = content.push(create_media_card(bus_name, player, &spacing, accent_color));
         }
     }
 
@@ -344,4 +369,106 @@ fn create_device_card<'a>(
     }
 
     col.into()
+}
+
+/// One card per active phone media player: album art (if downloaded),
+/// title/artist, and prev/play-pause/next controls that call straight
+/// through to the player's own MPRIS D-Bus service.
+fn create_media_card<'a>(
+    bus_name: &'a str,
+    player: &'a NowPlaying,
+    spacing: &cosmic::cosmic_theme::Spacing,
+    accent_color: cosmic::iced::Color,
+) -> Element<'a, Message> {
+    let art: Element<'a, Message> = if let Some(ref path) = player.art_path {
+        widget::image(widget::image::Handle::from_path(path))
+            .width(Length::Fixed(64.0))
+            .height(Length::Fixed(64.0))
+            .into()
+    } else {
+        widget::icon::from_name("audio-x-generic-symbolic")
+            .size(64)
+            .into()
+    };
+
+    let title = player.title.clone();
+    let artist = player.artist.clone().unwrap_or_default();
+
+    let mut info_col = widget::Column::new()
+        .spacing(2)
+        .width(Length::Fill)
+        .align_x(Alignment::Center);
+
+    // Always label which app this card controls — with metadata present that's
+    // a small caption above the song title; without it (e.g. a browser tab
+    // whose media session doesn't report a track) it's the only line shown,
+    // so the card never just reads as an empty box.
+    if let Some(ref title) = title {
+        info_col = info_col.push(
+            widget::text(player.identity.clone())
+                .size(10)
+                .class(cosmic::theme::Text::Color(accent_color)),
+        );
+        info_col = info_col.push(widget::text(title.clone()).size(13).font(cosmic::font::bold()));
+    } else {
+        info_col = info_col.push(
+            widget::text(player.identity.clone())
+                .size(13)
+                .font(cosmic::font::bold()),
+        );
+    }
+    info_col = info_col.push_maybe((!artist.is_empty()).then(|| widget::text(artist).size(11)));
+
+    let play_icon = if player.is_playing {
+        "media-playback-pause-symbolic"
+    } else {
+        "media-playback-start-symbolic"
+    };
+
+    let mut prev_btn =
+        widget::button::icon(theme::accent_icon("media-skip-backward-symbolic", accent_color))
+            .class(cosmic::theme::Button::Icon);
+    if player.can_go_previous {
+        prev_btn = prev_btn.on_press(Message::MprisPrevious(bus_name.to_string()));
+    }
+
+    // Some phone-side players (browser tabs in particular) advertise a media
+    // session with no working transport controls at all — leave the button
+    // disabled rather than pretend it does something.
+    let mut play_pause_btn = widget::button::icon(theme::accent_icon(play_icon, accent_color))
+        .class(cosmic::theme::Button::Icon);
+    if player.can_play || player.can_pause {
+        play_pause_btn = play_pause_btn.on_press(Message::MprisPlayPause(bus_name.to_string()));
+    }
+
+    let mut next_btn =
+        widget::button::icon(theme::accent_icon("media-skip-forward-symbolic", accent_color))
+            .class(cosmic::theme::Button::Icon);
+    if player.can_go_next {
+        next_btn = next_btn.on_press(Message::MprisNext(bus_name.to_string()));
+    }
+
+    let controls = widget::Row::new()
+        .push(prev_btn)
+        .push(play_pause_btn)
+        .push(next_btn)
+        .spacing(spacing.space_xxs)
+        .align_y(Alignment::Center);
+
+    let top_row = widget::Row::new()
+        .push(art)
+        .push(widget::Space::new().width(Length::Fill))
+        .push(controls)
+        .align_y(Alignment::Center);
+
+    widget::container(
+        widget::Column::new()
+            .push(top_row)
+            .push(info_col)
+            .spacing(spacing.space_s),
+    )
+    .padding(spacing.space_s)
+    .class(cosmic::theme::Container::Card)
+    .width(Length::Fill)
+    .into()
 }
