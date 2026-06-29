@@ -212,6 +212,64 @@ impl SettingsApp {
             .unwrap_or(true)
     }
 
+    /// A track-and-handle switch drawn from two styled containers, so its
+    /// "on" colour can follow the real host accent instead of the
+    /// sandboxed-teal `widget::toggler` default (see theme.rs).
+    fn plugin_toggle<'a>(&self, enabled: bool, plugin_id: String) -> Element<'a, Message> {
+        const TRACK_W: f32 = 40.0;
+        const TRACK_H: f32 = 22.0;
+        const HANDLE: f32 = 16.0;
+        const OFF_TRACK: cosmic::iced::Color = cosmic::iced::Color {
+            r: 0.5,
+            g: 0.5,
+            b: 0.5,
+            a: 0.35,
+        };
+
+        let track_color = if enabled { self.accent_color } else { OFF_TRACK };
+
+        let handle = widget::container(widget::Space::new())
+            .width(Length::Fixed(HANDLE))
+            .height(Length::Fixed(HANDLE))
+            .class(cosmic::theme::Container::custom(move |_theme| {
+                cosmic::iced::widget::container::Style {
+                    background: Some(cosmic::iced::Background::Color(cosmic::iced::Color::WHITE)),
+                    border: cosmic::iced::Border {
+                        radius: cosmic::iced::Radius::from(HANDLE / 2.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            }));
+
+        let track = widget::container(handle)
+            .width(Length::Fixed(TRACK_W))
+            .height(Length::Fixed(TRACK_H))
+            .padding(3.0)
+            .align_y(Alignment::Center)
+            .align_x(if enabled {
+                Alignment::End
+            } else {
+                Alignment::Start
+            })
+            .class(cosmic::theme::Container::custom(move |_theme| {
+                cosmic::iced::widget::container::Style {
+                    background: Some(cosmic::iced::Background::Color(track_color)),
+                    border: cosmic::iced::Border {
+                        radius: cosmic::iced::Radius::from(TRACK_H / 2.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            }));
+
+        widget::button::custom(track)
+            .class(cosmic::theme::Button::Text)
+            .padding(0)
+            .on_press(Message::TogglePlugin(plugin_id, !enabled))
+            .into()
+    }
+
     fn default_plugin_map() -> HashMap<String, bool> {
         implemented_plugins()
             .iter()
@@ -707,10 +765,7 @@ impl SettingsApp {
                         .push(widget::text(plugin.description.as_str()).size(12))
                         .width(Length::Fill),
                 )
-                .push(
-                    widget::toggler(enabled)
-                        .on_toggle(move |v| Message::TogglePlugin(plugin_id.clone(), v)),
-                );
+                .push(self.plugin_toggle(enabled, plugin_id));
 
             col = col.push(
                 widget::container(row)
@@ -893,7 +948,10 @@ impl SettingsApp {
 }
 
 fn main() -> cosmic::iced::Result {
-    let settings = cosmic::app::Settings::default()
+    let mut settings = cosmic::app::Settings::default()
         .size(cosmic::iced::Size::new(740.0, 540.0));
+    if let Some(theme) = cosmic_ext_connect_applet::theme::try_load_cosmic_theme() {
+        settings = settings.theme(theme);
+    }
     cosmic::app::run::<SettingsApp>(settings, ())
 }
