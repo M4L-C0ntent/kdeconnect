@@ -20,6 +20,7 @@ use crate::{
 };
 
 pub mod config;
+pub mod contacts;
 pub mod plugin_config;
 pub mod hidden_conversations;
 pub mod sms_read_state;

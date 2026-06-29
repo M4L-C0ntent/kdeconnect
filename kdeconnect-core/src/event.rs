@@ -85,4 +85,9 @@ pub enum ConnectionEvent {
     /// path) — filename doubles as the correlation key since upstream
     /// KDE Connect's `attachment_file` response carries no part_id.
     SmsAttachmentReceived((DeviceId, String, std::path::PathBuf)),
+    /// Phone -> base64-encoded photo, extracted from the PHOTO property of
+    /// vcards already being parsed for `ContactsReceived`. Kept as base64
+    /// the whole way to the UI (same as SMS thumbnails) rather than
+    /// decoding here only to re-encode for the D-Bus signal/cache.
+    ContactPhotosReceived(HashMap<String, String>),
 }

@@ -197,6 +197,46 @@ pub async fn get_cached_contacts(device_id: &str) -> std::collections::HashMap<S
     }
 }
 
+/// Fetches cached contact photos and decodes them once here (phone →
+/// raw image bytes), same as SMS thumbnails — so views.rs never has to
+/// decode base64 on every render.
+pub async fn get_cached_contact_photos(device_id: &str) -> std::collections::HashMap<String, Vec<u8>> {
+    debug!("get_cached_contact_photos device={}", device_id);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+
+    let decode = |json: &str| -> std::collections::HashMap<String, Vec<u8>> {
+        let map: std::collections::HashMap<String, String> =
+            serde_json::from_str(json).unwrap_or_default();
+        map.into_iter()
+            .filter_map(|(phone, b64)| {
+                kdeconnect_core::contacts::decode_photo(&b64).map(|bytes| (phone, bytes))
+            })
+            .collect()
+    };
+
+    let id = device_id.to_string();
+    if let Some(reply) =
+        via_varlink(|c| async move { c.get_cached_contact_photos(id).call().await }).await
+    {
+        return decode(&reply.json);
+    }
+
+    let Some(client) = get_client().await else {
+        return std::collections::HashMap::new();
+    };
+    match client.get_cached_contact_photos(device_id).await {
+        Ok(photos_json) => {
+            let map = decode(&photos_json);
+            debug!("got {} cached contact photos", map.len());
+            map
+        }
+        Err(e) => {
+            error!("get_cached_contact_photos failed: {:?}", e);
+            std::collections::HashMap::new()
+        }
+    }
+}
+
 pub async fn get_cached_sms(device_id: &str) -> Option<String> {
     debug!("get_cached_sms device={}", device_id);
     use kdeconnect_varlink::iface::VarlinkClientInterface;

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
 use super::actions::SmsMessage;
+use super::avatar::{self, Avatar};
 use super::dbus;
 use super::emoji::EmojiCategory;
 use super::models::{Conversation, Message, MessageAttachment, ProtocolEvent};
@@ -25,6 +26,11 @@ pub struct SmsWindow {
     pub device_name: String,
     pub conversations: Vec<Conversation>,
     pub contacts: HashMap<String, String>,
+    /// Phone -> baked circular avatar, parsed from vcard PHOTO
+    /// properties. Missing entry (not an empty one) means "no photo
+    /// available, show the default placeholder" — see
+    /// `views::view_contact_avatar`.
+    pub contact_photos: HashMap<String, Avatar>,
     pub selected_thread: Option<String>,
     pub messages: Vec<Message>,
     pub message_input: String,
@@ -75,6 +81,7 @@ impl Application for SmsWindow {
             device_name: device_name.clone(),
             conversations: Vec::new(),
             contacts: HashMap::new(),
+            contact_photos: HashMap::new(),
             selected_thread: None,
             messages: Vec::new(),
             message_input: String::new(),
@@ -141,6 +148,12 @@ impl Application for SmsWindow {
                     yield SmsMessage::ContactsLoaded(cached_contacts);
                 }
 
+                let cached_photos = dbus::get_cached_contact_photos(&device_id).await;
+                if !cached_photos.is_empty() {
+                    debug!("yielding {} cached contact photos at startup", cached_photos.len());
+                    yield SmsMessage::ContactPhotosLoaded(cached_photos);
+                }
+
                 if let Some(cached_json) = dbus::get_cached_sms(&device_id).await {
                     debug!("yielding cached SMS at startup");
                     let (messages, conversations) = dbus::parse_sms_messages(&cached_json);
@@ -191,6 +204,19 @@ impl Application for SmsWindow {
                                 debug!("SmsAttachmentReceived {} -> {}", filename, path);
                                 yield SmsMessage::AttachmentReceived(filename, path.into());
                             }
+                            ServiceEvent::ContactPhotosReceived(photos) => {
+                                debug!("ContactPhotosReceived {} entries", photos.len());
+                                let decoded: HashMap<String, Vec<u8>> = photos
+                                    .into_iter()
+                                    .filter_map(|(phone, b64)| {
+                                        kdeconnect_core::contacts::decode_photo(&b64)
+                                            .map(|bytes| (phone, bytes))
+                                    })
+                                    .collect();
+                                if !decoded.is_empty() {
+                                    yield SmsMessage::ContactPhotosLoaded(decoded);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -221,6 +247,29 @@ impl Application for SmsWindow {
                 debug!("ContactsLoaded: {} contacts", contacts.len());
                 self.contacts = contacts;
                 self.update_conversation_names();
+            }
+            SmsMessage::ContactPhotosLoaded(photos) => {
+                debug!("ContactPhotosLoaded: {} photos, baking off the UI thread", photos.len());
+                return cosmic::task::future(async move {
+                    let baked = tokio::task::spawn_blocking(move || {
+                        photos
+                            .into_iter()
+                            .filter_map(|(phone, raw)| {
+                                avatar::make_circular(&raw, avatar::BAKE_SIZE).map(|a| (phone, a))
+                            })
+                            .collect::<HashMap<String, Avatar>>()
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!("avatar baking task panicked: {}", e);
+                        HashMap::new()
+                    });
+                    Action::App(SmsMessage::AvatarsBaked(baked))
+                });
+            }
+            SmsMessage::AvatarsBaked(baked) => {
+                debug!("AvatarsBaked: {} avatars", baked.len());
+                self.contact_photos.extend(baked);
             }
             SmsMessage::RequestFullAttachment { part_id, unique_identifier } => {
                 debug!("RequestFullAttachment part_id={}", part_id);

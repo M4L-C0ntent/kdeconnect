@@ -404,7 +404,10 @@ fn view_conversation_item<'a>(
     let delete_button = widget::button::icon(widget::icon::from_name("user-trash-symbolic").handle())
         .on_press(SmsMessage::RequestDeleteConversation(conv.thread_id.clone()));
 
+    let photo = get_contact_photo(app, &conv.phone_number);
+
     widget::Row::new()
+        .push(widget::container(view_contact_avatar(photo, 32.0)).padding([0, spacing.space_xs, 0, spacing.space_s]))
         .push(row_content)
         .push(delete_button)
         .align_y(Alignment::Center)
@@ -461,16 +464,23 @@ fn view_thread_header<'a>(
 ) -> Element<'a, SmsMessage> {
     let display_name =
         get_contact_name(app, &conv.phone_number).unwrap_or_else(|| conv.phone_number.clone());
+    let photo = get_contact_photo(app, &conv.phone_number);
 
     widget::container(
-        widget::Column::new()
+        widget::Row::new()
+            .push(view_contact_avatar(photo, 40.0))
             .push(
-                widget::text(display_name)
-                    .size(16)
-                    .font(cosmic::font::bold()),
+                widget::Column::new()
+                    .push(
+                        widget::text(display_name)
+                            .size(16)
+                            .font(cosmic::font::bold()),
+                    )
+                    .push(widget::text(&conv.phone_number).size(12))
+                    .spacing(spacing.space_xxs),
             )
-            .push(widget::text(&conv.phone_number).size(12))
-            .spacing(spacing.space_xxs)
+            .spacing(spacing.space_s)
+            .align_y(Alignment::Center)
             .padding(spacing.space_s),
     )
     .class(cosmic::theme::Container::Card)
@@ -806,6 +816,58 @@ fn get_contact_name(app: &SmsWindow, phone_number: &str) -> Option<String> {
         .iter()
         .find(|(contact_phone, _)| phone_numbers_match(phone_number, contact_phone))
         .map(|(_, name)| name.clone())
+}
+
+fn get_contact_photo<'a>(app: &'a SmsWindow, phone_number: &str) -> Option<&'a super::avatar::Avatar> {
+    app.contact_photos
+        .iter()
+        .find(|(contact_phone, _)| phone_numbers_match(phone_number, contact_phone))
+        .map(|(_, photo)| photo)
+}
+
+/// Avatar for a contact: their photo if we have one, otherwise a generic
+/// placeholder — never blank, never square. The photo's roundness is
+/// baked into its pixels already (see `avatar::make_circular`) rather
+/// than relying on container clipping, which didn't actually mask image
+/// content to a rounded shape in testing. The placeholder reuses the
+/// same background+radius technique as the unread-conversation dot
+/// elsewhere in this file, which *is* proven to render rounded — a
+/// rounded quad with no background/border to actually show is why the
+/// placeholder looked square before.
+fn view_contact_avatar<'a>(photo: Option<&'a super::avatar::Avatar>, size: f32) -> Element<'a, SmsMessage> {
+    if let Some(avatar) = photo {
+        return widget::image(cosmic::widget::image::Handle::from_rgba(
+            avatar.width,
+            avatar.height,
+            avatar.rgba.clone(),
+        ))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .into();
+    }
+
+    widget::container(
+        widget::icon::from_name("avatar-default-symbolic")
+            .icon()
+            .size((size * 0.6) as u16),
+    )
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .class(cosmic::theme::Container::custom(move |theme| {
+        cosmic::iced::widget::container::Style {
+            background: Some(cosmic::iced::Background::Color(
+                theme.cosmic().bg_component_color().into(),
+            )),
+            border: cosmic::iced::Border {
+                radius: cosmic::iced::Radius::from(size / 2.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }))
+    .into()
 }
 
 fn get_current_conversation_phone(app: &SmsWindow) -> Option<String> {

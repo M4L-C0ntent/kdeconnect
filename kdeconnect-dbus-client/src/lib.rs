@@ -41,6 +41,8 @@ pub enum ServiceEvent {
     BrowseFailed(String, String),              // device_id, message
     /// (filename/unique_identifier, local file path)
     SmsAttachmentReceived(String, String),
+    /// Phone -> base64-encoded photo
+    ContactPhotosReceived(HashMap<String, String>),
 }
 
 /// D-Bus proxy for daemon interface
@@ -161,9 +163,13 @@ trait Sms {
 trait Contacts {
     async fn request_contacts(&self, device_id: &str) -> zbus::Result<()>;
     async fn get_cached_contacts(&self, device_id: &str) -> zbus::Result<String>;
+    async fn get_cached_contact_photos(&self, device_id: &str) -> zbus::Result<String>;
 
     #[zbus(signal)]
     async fn contacts_received(&self, contacts_json: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn contact_photos_received(&self, photos_json: String) -> zbus::Result<()>;
 }
 
 /// Main client for KDE Connect service
@@ -331,6 +337,11 @@ impl KdeConnectClient {
     /// Get cached contacts as a raw JSON string (phone → name map)
     pub async fn get_cached_contacts(&self, device_id: &str) -> Result<String> {
         Ok(self.contacts_proxy.get_cached_contacts(device_id).await?)
+    }
+
+    /// Get cached contact photos as a raw JSON string (phone → base64)
+    pub async fn get_cached_contact_photos(&self, device_id: &str) -> Result<String> {
+        Ok(self.contacts_proxy.get_cached_contact_photos(device_id).await?)
     }
 
     /// Create a stream of service events
@@ -536,6 +547,24 @@ impl KdeConnectClient {
                 }
             });
 
+        let contact_photos = self
+            .contacts_proxy
+            .receive_contact_photos_received()
+            .await?
+            .filter_map(|s| async move {
+                match s.args() {
+                    Ok(args) => {
+                        let map: HashMap<String, String> =
+                            serde_json::from_str(&args.photos_json).unwrap_or_default();
+                        Some(ServiceEvent::ContactPhotosReceived(map))
+                    }
+                    Err(e) => {
+                        error!("Failed to parse ContactPhotosReceived signal: {:?}", e);
+                        None
+                    }
+                }
+            });
+
         Ok(Box::pin(select_all(vec![
             Box::pin(connected) as futures::stream::BoxStream<'static, ServiceEvent>,
             Box::pin(paired),
@@ -549,6 +578,7 @@ impl KdeConnectClient {
             Box::pin(run_command_list),
             Box::pin(browse_failed),
             Box::pin(attachment),
+            Box::pin(contact_photos),
         ])))
     }
 

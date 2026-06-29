@@ -11,6 +11,7 @@ use kdeconnect_varlink::iface::{
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
     Call_RequestConversations, Call_RequestConversation, Call_SendSms,
     Call_GetCachedSms, Call_RequestContacts, Call_GetCachedContacts, Call_RequestSmsAttachment,
+    Call_GetCachedContactPhotos,
 };
 use kdeconnect_varlink::socket_address;
 use kdeconnect_core::{PacketType, ProtocolPacket, device::DeviceId, event::AppEvent};
@@ -209,6 +210,16 @@ impl VarlinkInterface for KdeConnectVarlinkService {
     async fn get_cached_contacts(&self, call: &mut dyn Call_GetCachedContacts, device_id: String) -> varlink::Result<()> {
         let json = match crate::dbus_interface::load_contacts_cache(&device_id).await {
             Some(contacts) => serde_json::to_string(&contacts).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        };
+        call.reply(json)
+    }
+
+    async fn get_cached_contact_photos(
+        &self, call: &mut dyn Call_GetCachedContactPhotos, device_id: String,
+    ) -> varlink::Result<()> {
+        let json = match crate::dbus_interface::load_contact_photos_cache(&device_id).await {
+            Some(photos) => serde_json::to_string(&photos).unwrap_or_else(|_| "{}".to_string()),
             None => "{}".to_string(),
         };
         call.reply(json)

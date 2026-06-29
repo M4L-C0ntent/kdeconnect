@@ -88,6 +88,45 @@ pub(crate) async fn load_contacts_cache(device_id: &str) -> Option<HashMap<Strin
     }
 }
 
+/// Phone -> base64-encoded photo. Same shape and on-disk convention as
+/// the name cache above, just a different file and decoding deferred to
+/// the UI (these stay base64 the whole way through, same as SMS
+/// thumbnails — see `ConnectionEvent::ContactPhotosReceived`).
+async fn save_contact_photos_cache(device_id: &str, photos: &HashMap<String, String>) {
+    let path = device_cache_dir(device_id).join("contact_photos_cache.json");
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    match serde_json::to_string(photos) {
+        Ok(json) => {
+            if let Err(e) = tokio::fs::write(&path, json).await {
+                error!("Failed to save contact photos cache: {}", e);
+            } else {
+                debug!(
+                    "Contact photos cache saved ({} entries) for {}",
+                    photos.len(),
+                    device_id
+                );
+            }
+        }
+        Err(e) => error!("Failed to serialize contact photos for cache: {}", e),
+    }
+}
+
+pub(crate) async fn load_contact_photos_cache(device_id: &str) -> Option<HashMap<String, String>> {
+    let path = device_cache_dir(device_id).join("contact_photos_cache.json");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(json) => match serde_json::from_str(&json) {
+            Ok(map) => Some(map),
+            Err(e) => {
+                error!("Failed to parse contact photos cache: {}", e);
+                None
+            }
+        },
+        Err(_) => None,
+    }
+}
+
 async fn save_sms_cache(device_id: &str, messages_json: &str) {
     let path = device_cache_dir(device_id).join("sms_cache.json");
     if let Some(parent) = path.parent() {
@@ -536,11 +575,28 @@ impl ContactsInterface {
         }
     }
 
+    /// Return cached contact photos from disk (phone -> base64) — no
+    /// phone required
+    async fn get_cached_contact_photos(&self, device_id: String) -> String {
+        match load_contact_photos_cache(&device_id).await {
+            Some(photos) => serde_json::to_string(&photos).unwrap_or_else(|_| "{}".to_string()),
+            None => "{}".to_string(),
+        }
+    }
+
     /// Signal: contacts received — JSON object mapping phone → name
     #[zbus(signal)]
     async fn contacts_received(
         signal_emitter: &SignalEmitter<'_>,
         contacts_json: String,
+    ) -> zbus::Result<()>;
+
+    /// Signal: contact photos received — JSON object mapping phone →
+    /// base64-encoded photo
+    #[zbus(signal)]
+    async fn contact_photos_received(
+        signal_emitter: &SignalEmitter<'_>,
+        photos_json: String,
     ) -> zbus::Result<()>;
 }
 
@@ -983,6 +1039,24 @@ impl KdeConnectService {
                 ContactsInterface::contacts_received(iface_ref.signal_emitter(), contacts_json)
                     .await?;
                 debug!("Contacts D-Bus signal emitted");
+            }
+            ConnectionEvent::ContactPhotosReceived(photos) => {
+                info!("Contact photos received: {} entries", photos.len());
+
+                if let Some(did) = current_device_id.lock().await.as_deref() {
+                    save_contact_photos_cache(did, &photos).await;
+                }
+
+                let photos_json = serde_json::to_string(&photos)?;
+
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, ContactsInterface>(CONTACTS_PATH)
+                    .await?;
+
+                ContactsInterface::contact_photos_received(iface_ref.signal_emitter(), photos_json)
+                    .await?;
+                debug!("ContactPhotosReceived D-Bus signal emitted");
             }
             ConnectionEvent::SmsAttachmentReceived((_device_id, filename, path)) => {
                 info!("SMS attachment received: {} -> {:?}", filename, path);

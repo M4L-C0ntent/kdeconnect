@@ -208,23 +208,51 @@ impl PluginRegistry {
                 debug!("Received ContactsResponseVcards");
                 let mut contacts: std::collections::HashMap<String, String> =
                     std::collections::HashMap::new();
+                let mut photos: std::collections::HashMap<String, String> =
+                    std::collections::HashMap::new();
+                let mut vcard_count = 0usize;
+                let mut remote_photo_count = 0usize;
                 if let Some(uids_val) = body.get("uids").and_then(|v| v.as_array()) {
                     for uid_val in uids_val {
                         if let Some(uid) = uid_val.as_str() {
                             if let Some(vcard_str) = body.get(uid).and_then(|v| v.as_str()) {
-                                let (name_opt, phones) = parse_vcard(vcard_str);
+                                vcard_count += 1;
+                                let (name_opt, phones, photo) = parse_vcard(vcard_str);
                                 if let Some(name) = name_opt {
-                                    for phone in phones {
-                                        contacts.insert(phone, name.clone());
+                                    for phone in &phones {
+                                        contacts.insert(phone.clone(), name.clone());
                                     }
+                                }
+                                match photo {
+                                    VcardPhoto::Inline(b64) => {
+                                        for phone in &phones {
+                                            photos.insert(phone.clone(), b64.clone());
+                                        }
+                                    }
+                                    VcardPhoto::Remote(url) => {
+                                        remote_photo_count += 1;
+                                        debug!(
+                                            "[contacts] photo referenced by remote URL, not fetched: {}",
+                                            url
+                                        );
+                                    }
+                                    VcardPhoto::Unrecognized | VcardPhoto::None => {}
                                 }
                             }
                         }
                     }
                 }
                 debug!("Parsed {} phone->name contact entries", contacts.len());
+                debug!(
+                    "[contacts] {} vcards: {} photos decoded inline, {} referenced remote URLs (not fetched)",
+                    vcard_count, photos.len(), remote_photo_count
+                );
                 if !contacts.is_empty() {
                     let _ = connection_tx.send(ConnectionEvent::ContactsReceived(contacts));
+                }
+                if !photos.is_empty() {
+                    debug!("Parsed {} contact photos", photos.len());
+                    let _ = connection_tx.send(ConnectionEvent::ContactPhotosReceived(photos));
                 }
             }
             PacketType::Clipboard => {
@@ -566,9 +594,75 @@ fn unfold_vcard_lines(content: &str) -> Vec<String> {
     lines
 }
 
-fn parse_vcard(content: &str) -> (Option<String>, Vec<String>) {
+/// Extracts a base64 photo payload from a vCard `PHOTO` property,
+/// handling the formats real-world exports actually use:
+/// - vCard 2.1/3.0: `PHOTO;ENCODING=BASE64;TYPE=JPEG:<data>`, or the
+///   bare-token shorthand `PHOTO;BASE64;JPEG:<data>` some exporters
+///   write instead of the full `ENCODING=` form
+/// - vCard 4.0: `PHOTO:data:image/jpeg;base64,<data>` — the encoding
+///   moved into the value itself as a data URI, no `ENCODING` param at
+///   all, which the original implementation didn't account for
+///
+/// Remote `PHOTO;VALUE=uri:http://...` photos are detected but
+/// deliberately not fetched. This is how Google-synced contacts
+/// reference their profile photo — confirmed this isn't something
+/// official KDE Connect resolves either: its contact sync writes plain
+/// vcards consumed by KPeople, with no KAddressBook/Akonadi involved.
+/// Richer Google photos on a real Plasma desktop come from a separate,
+/// unrelated integration (`kaccounts-mobile`'s direct Google People API
+/// sync) that fills the same KPeople merge point — not from anything
+/// KDE Connect's vcard transfer does differently. Building an equivalent
+/// would mean a full Google OAuth/People-API integration, well beyond
+/// this feature; until then, `VcardPhoto::Remote` exists so the caller
+/// can log a clear signal distinguishing "phone never sent a photo" from
+/// "phone sent a link we don't follow".
+fn extract_vcard_photo(prop_upper: &str, value: &str) -> VcardPhoto {
+    if let Some(idx) = value.to_uppercase().find("BASE64,") {
+        let data = &value[idx + "BASE64,".len()..];
+        let stripped: String = data.chars().filter(|c| !c.is_whitespace()).collect();
+        if !stripped.is_empty() {
+            return VcardPhoto::Inline(stripped);
+        }
+    }
+
+    let has_base64_param = prop_upper.split(';').skip(1).any(|param| {
+        matches!(param, "BASE64" | "B" | "ENCODING=BASE64" | "ENCODING=B")
+    });
+
+    if has_base64_param {
+        let stripped: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+        if !stripped.is_empty() {
+            return VcardPhoto::Inline(stripped);
+        }
+    }
+
+    let value_trim = value.trim();
+    if value_trim.starts_with("http://") || value_trim.starts_with("https://") {
+        return VcardPhoto::Remote(value_trim.to_string());
+    }
+
+    if !value_trim.is_empty() {
+        debug!(
+            "[contacts] PHOTO present but in an unrecognized format (params: {}, value starts: {:.30})",
+            prop_upper, value_trim
+        );
+        return VcardPhoto::Unrecognized;
+    }
+
+    VcardPhoto::None
+}
+
+enum VcardPhoto {
+    Inline(String),
+    Remote(String),
+    Unrecognized,
+    None,
+}
+
+fn parse_vcard(content: &str) -> (Option<String>, Vec<String>, VcardPhoto) {
     let mut name: Option<String> = None;
     let mut phones: Vec<String> = Vec::new();
+    let mut photo = VcardPhoto::None;
 
     for line in unfold_vcard_lines(content) {
         let line = line.trim().to_string();
@@ -602,8 +696,14 @@ fn parse_vcard(content: &str) -> (Option<String>, Vec<String>) {
             if !phone.is_empty() {
                 phones.push(phone);
             }
+        } else if prop_name == "PHOTO" && matches!(photo, VcardPhoto::None) {
+            // Keep the first PHOTO line's result — a vcard with multiple
+            // PHOTO entries (e.g. a remote ref alongside a cached inline
+            // copy) shouldn't let a later, worse one overwrite a usable
+            // earlier one, or vice versa silently.
+            photo = extract_vcard_photo(&prop_upper, &value);
         }
     }
 
-    (name, phones)
+    (name, phones, photo)
 }

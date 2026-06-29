@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use super::avatar::Avatar;
 use super::emoji::EmojiCategory;
 use super::models::{Conversation, ProtocolEvent};
 
@@ -17,6 +18,15 @@ pub enum SmsMessage {
     ConversationsLoaded(Vec<Conversation>),
     #[allow(dead_code)]
     ContactsLoaded(HashMap<String, String>),
+    /// Phone -> decoded photo bytes, merged into existing entries rather
+    /// than replacing them (vcards arrive in batches, and a later batch
+    /// shouldn't blank out photos already shown from an earlier one).
+    ContactPhotosLoaded(HashMap<String, Vec<u8>>),
+    /// Result of baking `ContactPhotosLoaded`'s raw bytes into circular
+    /// avatars off the UI thread — see the `ContactPhotosLoaded` handler
+    /// in `app.rs`. Kept as a separate message rather than baking inline
+    /// so a large contact list with many photos can't stall the UI.
+    AvatarsBaked(HashMap<String, Avatar>),
     SelectThread(String),
     UpdateInput(String),
     UpdateSearch(String),
