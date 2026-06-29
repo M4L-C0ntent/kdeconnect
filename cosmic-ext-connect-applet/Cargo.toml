@@ -23,6 +23,7 @@ futures-util = { workspace = true }
 urlencoding = { workspace = true }
 serde_json = { workspace = true }
 lazy_static = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 ctrlc = { workspace = true }
 async-stream = { workspace = true }
 anyhow = { workspace = true }

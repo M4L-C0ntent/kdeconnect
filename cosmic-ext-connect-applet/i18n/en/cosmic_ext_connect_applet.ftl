@@ -92,6 +92,14 @@ plugin-telephony-desc = Show desktop notifications for incoming calls, missed ca
 # SMS app
 sms-window-title = SMS - { $device }
 sms-search-placeholder = Search conversations...
+sms-open-attachment = Open
+sms-attach-picker-title = Attach a file
+sms-attachment-photo = Photo
+sms-attachment-video = Video
+sms-attachment-generic = Attachment
+sms-save-attachment-title = Save attachment
+sms-save-success-summary = Attachment saved
+sms-save-failed-summary = Failed to save attachment
 sms-no-conversations = No conversations
 sms-no-matching-conversations = No matching conversations
 sms-select-conversation = Select a conversation to view messages

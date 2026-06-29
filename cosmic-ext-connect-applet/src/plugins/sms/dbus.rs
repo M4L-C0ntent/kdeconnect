@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use super::models::{Conversation, Message};
+use super::models::{Conversation, Message, MessageAttachment};
 
 lazy_static::lazy_static! {
     static ref SMS_CLIENT: Arc<Mutex<Option<Arc<KdeConnectClient>>>> = Arc::new(Mutex::new(None));
@@ -99,13 +99,17 @@ pub async fn request_conversation_messages(device_id: &str, thread_id: &str) {
     }
 }
 
-pub async fn send_sms(device_id: &str, phone_number: &str, message: &str) {
-    debug!("send_sms to={} device={}", phone_number, device_id);
+pub async fn send_sms(device_id: &str, phone_number: &str, message: &str, attachments: Vec<String>) {
+    debug!(
+        "send_sms to={} device={} attachments={}",
+        phone_number, device_id, attachments.len()
+    );
     use kdeconnect_varlink::iface::VarlinkClientInterface;
     let id = device_id.to_string();
     let phone = phone_number.to_string();
     let msg = message.to_string();
-    if via_varlink(|c| async move { c.send_sms(id, phone, msg).call().await })
+    let files = attachments.clone();
+    if via_varlink(|c| async move { c.send_sms(id, phone, msg, files).call().await })
         .await
         .is_some()
     {
@@ -115,9 +119,33 @@ pub async fn send_sms(device_id: &str, phone_number: &str, message: &str) {
     let Some(client) = get_client().await else {
         return;
     };
-    match client.send_sms(device_id, phone_number, message).await {
+    match client.send_sms(device_id, phone_number, message, attachments).await {
         Ok(_) => debug!("send_sms OK"),
         Err(e) => error!("send_sms failed: {:?}", e),
+    }
+}
+
+/// Requests the full-resolution file for one MMS attachment. Fire-and-forget
+/// — the result arrives later as a `SmsAttachmentReceived` D-Bus signal,
+/// same as every other async SMS event.
+pub async fn request_sms_attachment(device_id: &str, part_id: i64, unique_identifier: &str) {
+    debug!("request_sms_attachment device={} part_id={}", device_id, part_id);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+    let id = device_id.to_string();
+    let uid = unique_identifier.to_string();
+    if via_varlink(|c| async move { c.request_sms_attachment(id, part_id, uid).call().await })
+        .await
+        .is_some()
+    {
+        debug!("request_sms_attachment sent via varlink");
+        return;
+    }
+    let Some(client) = get_client().await else {
+        return;
+    };
+    match client.request_sms_attachment(device_id, part_id, unique_identifier).await {
+        Ok(_) => debug!("request_sms_attachment sent"),
+        Err(e) => error!("request_sms_attachment failed: {:?}", e),
     }
 }
 
@@ -164,6 +192,46 @@ pub async fn get_cached_contacts(device_id: &str) -> std::collections::HashMap<S
         }
         Err(e) => {
             error!("get_cached_contacts failed: {:?}", e);
+            std::collections::HashMap::new()
+        }
+    }
+}
+
+/// Fetches cached contact photos and decodes them once here (phone →
+/// raw image bytes), same as SMS thumbnails — so views.rs never has to
+/// decode base64 on every render.
+pub async fn get_cached_contact_photos(device_id: &str) -> std::collections::HashMap<String, Vec<u8>> {
+    debug!("get_cached_contact_photos device={}", device_id);
+    use kdeconnect_varlink::iface::VarlinkClientInterface;
+
+    let decode = |json: &str| -> std::collections::HashMap<String, Vec<u8>> {
+        let map: std::collections::HashMap<String, String> =
+            serde_json::from_str(json).unwrap_or_default();
+        map.into_iter()
+            .filter_map(|(phone, b64)| {
+                kdeconnect_core::contacts::decode_photo(&b64).map(|bytes| (phone, bytes))
+            })
+            .collect()
+    };
+
+    let id = device_id.to_string();
+    if let Some(reply) =
+        via_varlink(|c| async move { c.get_cached_contact_photos(id).call().await }).await
+    {
+        return decode(&reply.json);
+    }
+
+    let Some(client) = get_client().await else {
+        return std::collections::HashMap::new();
+    };
+    match client.get_cached_contact_photos(device_id).await {
+        Ok(photos_json) => {
+            let map = decode(&photos_json);
+            debug!("got {} cached contact photos", map.len());
+            map
+        }
+        Err(e) => {
+            error!("get_cached_contact_photos failed: {:?}", e);
             std::collections::HashMap::new()
         }
     }
@@ -241,6 +309,17 @@ pub fn parse_sms_messages(messages_json: &str) -> (Vec<Message>, Vec<Conversatio
                 address,
                 body: msg.body.clone(),
                 date: msg.date,
+                attachments: msg
+                    .attachments
+                    .iter()
+                    .map(|a| MessageAttachment {
+                        part_id: a.part_id,
+                        unique_identifier: a.unique_identifier.clone(),
+                        mime_type: a.mime_type.clone(),
+                        thumbnail: a.decode_thumbnail(),
+                        full_path: None,
+                    })
+                    .collect(),
                 type_: msg.message_type,
                 read: msg.read == 1,
             }

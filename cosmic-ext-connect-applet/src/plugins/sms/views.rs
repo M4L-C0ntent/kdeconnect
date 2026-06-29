@@ -89,7 +89,11 @@ pub fn view_main(app: &SmsWindow) -> Element<'_, SmsMessage> {
     widget::Row::new()
         .spacing(0)
         .push(view_conversations_list(app, &spacing))
-        .push(widget::divider::vertical::default())
+        .push(
+            widget::container(widget::divider::vertical::default())
+                .height(Length::Fill)
+                .padding([0, spacing.space_xxs]),
+        )
         .push(view_thread_panel(app, &spacing))
         .into()
 }
@@ -219,6 +223,15 @@ fn get_filtered_contacts(app: &SmsWindow) -> Vec<(&String, &String)> {
     }
 }
 
+/// Manually re-syncs conversations from the phone. `LoadConversations` was
+/// already fully wired in `update()` but had no UI entry point — everything
+/// else updates via the live event stream.
+fn view_refresh_button<'a>() -> Element<'a, SmsMessage> {
+    widget::button::icon(widget::icon::from_name("view-refresh-symbolic").handle())
+        .on_press(SmsMessage::LoadConversations)
+        .into()
+}
+
 /// Conversations list panel
 fn view_conversations_list<'a>(
     app: &'a SmsWindow,
@@ -226,22 +239,27 @@ fn view_conversations_list<'a>(
 ) -> Element<'a, SmsMessage> {
     let mut content = widget::Column::new().spacing(spacing.space_xs);
 
-    // Start Chat button
+    // Hamburger menu + Start Chat, right-aligned
     content = content.push(
         widget::container(
-            widget::button::suggested(fl!("sms-new-chat-start"))
-                .on_press(SmsMessage::OpenNewChatDialog)
-                .class(crate::theme::accent_filled_button(app.accent_color))
-                .width(Length::Fill),
+            widget::Row::new()
+                .push(view_refresh_button())
+                .push(widget::space::horizontal())
+                .push(
+                    widget::button::suggested(fl!("sms-new-chat-start"))
+                        .on_press(SmsMessage::OpenNewChatDialog)
+                        .class(crate::theme::accent_filled_button(app.accent_color)),
+                )
+                .align_y(Alignment::Center)
+                .spacing(spacing.space_xs),
         )
         .padding(spacing.space_s),
     );
 
     // Search input
     content = content.push(
-        widget::text_input(fl!("sms-search-placeholder"), &app.search_query)
-            .on_input(SmsMessage::UpdateSearch)
-            .padding(spacing.space_s),
+        widget::search_input(fl!("sms-search-placeholder"), &app.search_query)
+            .on_input(SmsMessage::UpdateSearch),
     );
     content = content.push(widget::divider::horizontal::default());
 
@@ -386,7 +404,10 @@ fn view_conversation_item<'a>(
     let delete_button = widget::button::icon(widget::icon::from_name("user-trash-symbolic").handle())
         .on_press(SmsMessage::RequestDeleteConversation(conv.thread_id.clone()));
 
+    let photo = get_contact_photo(app, &conv.phone_number);
+
     widget::Row::new()
+        .push(widget::container(view_contact_avatar(photo, 32.0)).padding([0, spacing.space_xs, 0, spacing.space_s]))
         .push(row_content)
         .push(delete_button)
         .align_y(Alignment::Center)
@@ -443,16 +464,23 @@ fn view_thread_header<'a>(
 ) -> Element<'a, SmsMessage> {
     let display_name =
         get_contact_name(app, &conv.phone_number).unwrap_or_else(|| conv.phone_number.clone());
+    let photo = get_contact_photo(app, &conv.phone_number);
 
     widget::container(
-        widget::Column::new()
+        widget::Row::new()
+            .push(view_contact_avatar(photo, 40.0))
             .push(
-                widget::text(display_name)
-                    .size(16)
-                    .font(cosmic::font::bold()),
+                widget::Column::new()
+                    .push(
+                        widget::text(display_name)
+                            .size(16)
+                            .font(cosmic::font::bold()),
+                    )
+                    .push(widget::text(&conv.phone_number).size(12))
+                    .spacing(spacing.space_xxs),
             )
-            .push(widget::text(&conv.phone_number).size(12))
-            .spacing(spacing.space_xxs)
+            .spacing(spacing.space_s)
+            .align_y(Alignment::Center)
             .padding(spacing.space_s),
     )
     .class(cosmic::theme::Container::Card)
@@ -499,6 +527,96 @@ fn view_messages_list<'a>(
         .into()
 }
 
+/// Renders one MMS attachment. Three states, and — unlike before — none
+/// of them render nothing, since a thumbnail-less attachment used to
+/// produce a blank bubble (the bug this replaces):
+/// - already downloaded + image → the full-resolution image (loaded by
+///   path, so iced caches it instead of us re-reading the file), plus a
+///   Save button to copy it out via the native "Save As" dialog
+/// - already downloaded + video → an "Open" button (iced can't render
+///   video inline) alongside the same Save button
+/// - not downloaded yet → the thumbnail preview if the phone sent one,
+///   otherwise a generic photo/video placeholder card — either way
+///   clickable to request the full file, *if* the phone gave it a
+///   `unique_identifier` to request by. Video in particular routinely has
+///   no thumbnail at all in this protocol, so the placeholder path is the
+///   common case for video, not a rare fallback.
+fn view_attachment<'a>(
+    attachment: &'a super::models::MessageAttachment,
+) -> Option<Element<'a, SmsMessage>> {
+    if let Some(path) = &attachment.full_path {
+        let save_button = widget::button::icon(widget::icon::from_name("document-save-symbolic").handle())
+            .on_press(SmsMessage::SaveAttachment(path.clone()));
+
+        return Some(if attachment.is_video() {
+            widget::Row::new()
+                .push(
+                    widget::button::standard(fl!("sms-open-attachment"))
+                        .on_press(SmsMessage::OpenAttachment(path.clone())),
+                )
+                .push(save_button)
+                .spacing(4)
+                .into()
+        } else {
+            widget::Column::new()
+                .push(
+                    widget::image(cosmic::widget::image::Handle::from_path(path))
+                        .width(Length::Fixed(220.0)),
+                )
+                .push(widget::Row::new().push(widget::space::horizontal()).push(save_button))
+                .spacing(4)
+                .into()
+        });
+    }
+
+    let preview: Element<'a, SmsMessage> = match attachment.thumbnail.as_deref() {
+        Some(thumbnail) if !thumbnail.is_empty() => {
+            widget::image(cosmic::widget::image::Handle::from_bytes(thumbnail.to_vec()))
+                .width(Length::Fixed(220.0))
+                .into()
+        }
+        _ => view_attachment_placeholder(attachment),
+    };
+
+    Some(match &attachment.unique_identifier {
+        Some(uid) => widget::mouse_area(preview)
+            .on_press(SmsMessage::RequestFullAttachment {
+                part_id: attachment.part_id,
+                unique_identifier: uid.clone(),
+            })
+            .into(),
+        None => preview,
+    })
+}
+
+/// Generic icon + label card shown in place of a thumbnail when the phone
+/// didn't send one. Video routinely has no thumbnail in this protocol at
+/// all, so this is the normal video appearance, not a rare error state.
+fn view_attachment_placeholder<'a>(
+    attachment: &super::models::MessageAttachment,
+) -> Element<'a, SmsMessage> {
+    let (icon_name, label) = if attachment.is_video() {
+        ("video-x-generic-symbolic", fl!("sms-attachment-video"))
+    } else if attachment.mime_type.starts_with("image/") {
+        ("image-x-generic-symbolic", fl!("sms-attachment-photo"))
+    } else {
+        ("mail-attachment-symbolic", fl!("sms-attachment-generic"))
+    };
+
+    widget::container(
+        widget::Column::new()
+            .push(widget::icon::from_name(icon_name).icon().size(48))
+            .push(widget::text(label).size(12))
+            .spacing(4)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(220.0))
+    .padding(16)
+    .align_x(Alignment::Center)
+    .class(cosmic::theme::Container::List)
+    .into()
+}
+
 fn view_message_bubble<'a>(
     app: &'a SmsWindow,
     msg: &'a super::models::Message,
@@ -521,6 +639,12 @@ fn view_message_bubble<'a>(
         );
     }
 
+    for attachment in &msg.attachments {
+        if let Some(element) = view_attachment(attachment) {
+            message_content = message_content.push(element);
+        }
+    }
+
     message_content = message_content
         .push(mixed_emoji_text(&msg.body, 14))
         .push(widget::text(format_timestamp(msg.date)).size(11))
@@ -532,7 +656,7 @@ fn view_message_bubble<'a>(
             .max_width(500.0)
     } else {
         widget::container(message_content)
-            .class(cosmic::theme::Container::Transparent)
+            .class(cosmic::theme::Container::Secondary)
             .max_width(500.0)
     };
 
@@ -562,6 +686,10 @@ fn view_message_input<'a>(
                 .on_press(SmsMessage::ToggleEmojiPicker),
         )
         .push(
+            widget::button::icon(widget::icon::from_name("mail-attachment-symbolic").handle())
+                .on_press(SmsMessage::PickAttachment),
+        )
+        .push(
             widget::text_input(message_placeholder, &app.message_input)
                 .on_input(SmsMessage::UpdateInput)
                 .on_submit(|_| SmsMessage::SendMessage)
@@ -580,9 +708,49 @@ fn view_message_input<'a>(
     if app.show_emoji_picker {
         col = col.push(view_emoji_picker(app, spacing));
     }
+    if !app.pending_attachments.is_empty() {
+        col = col.push(view_pending_attachments(app, spacing));
+    }
     col = col.push(input_row);
 
     col.padding(spacing.space_s).into()
+}
+
+/// Staged outgoing attachments, shown as a row of removable chips above
+/// the compose bar. Just the filename — no preview thumbnail, since these
+/// are local files we haven't sent yet (not worth a thumbnail decode for
+/// something this transient).
+fn view_pending_attachments<'a>(
+    app: &'a SmsWindow,
+    spacing: &cosmic::cosmic_theme::Spacing,
+) -> Element<'a, SmsMessage> {
+    let mut row = widget::Row::new().spacing(spacing.space_xs);
+    for (index, path) in app.pending_attachments.iter().enumerate() {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+
+        row = row.push(
+            widget::container(
+                widget::Row::new()
+                    .push(widget::text(name).size(12))
+                    .push(
+                        widget::button::icon(widget::icon::from_name("window-close-symbolic").handle())
+                            .on_press(SmsMessage::RemovePendingAttachment(index)),
+                    )
+                    .spacing(spacing.space_xxs)
+                    .align_y(Alignment::Center),
+            )
+            .class(cosmic::theme::Container::Secondary)
+            .padding(spacing.space_xxs),
+        );
+    }
+    widget::scrollable(row)
+        .direction(cosmic::iced::widget::scrollable::Direction::Horizontal(
+            cosmic::iced::widget::scrollable::Scrollbar::new(),
+        ))
+        .into()
 }
 
 /// Emoji picker panel: category tabs + a scrollable grid of emoji for the
@@ -662,6 +830,58 @@ fn get_contact_name(app: &SmsWindow, phone_number: &str) -> Option<String> {
         .iter()
         .find(|(contact_phone, _)| phone_numbers_match(phone_number, contact_phone))
         .map(|(_, name)| name.clone())
+}
+
+fn get_contact_photo<'a>(app: &'a SmsWindow, phone_number: &str) -> Option<&'a super::avatar::Avatar> {
+    app.contact_photos
+        .iter()
+        .find(|(contact_phone, _)| phone_numbers_match(phone_number, contact_phone))
+        .map(|(_, photo)| photo)
+}
+
+/// Avatar for a contact: their photo if we have one, otherwise a generic
+/// placeholder — never blank, never square. The photo's roundness is
+/// baked into its pixels already (see `avatar::make_circular`) rather
+/// than relying on container clipping, which didn't actually mask image
+/// content to a rounded shape in testing. The placeholder reuses the
+/// same background+radius technique as the unread-conversation dot
+/// elsewhere in this file, which *is* proven to render rounded — a
+/// rounded quad with no background/border to actually show is why the
+/// placeholder looked square before.
+fn view_contact_avatar<'a>(photo: Option<&'a super::avatar::Avatar>, size: f32) -> Element<'a, SmsMessage> {
+    if let Some(avatar) = photo {
+        return widget::image(cosmic::widget::image::Handle::from_rgba(
+            avatar.width,
+            avatar.height,
+            avatar.rgba.clone(),
+        ))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .into();
+    }
+
+    widget::container(
+        widget::icon::from_name("avatar-default-symbolic")
+            .icon()
+            .size((size * 0.6) as u16),
+    )
+    .width(Length::Fixed(size))
+    .height(Length::Fixed(size))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .class(cosmic::theme::Container::custom(move |theme| {
+        cosmic::iced::widget::container::Style {
+            background: Some(cosmic::iced::Background::Color(
+                theme.cosmic().bg_component_color().into(),
+            )),
+            border: cosmic::iced::Border {
+                radius: cosmic::iced::Radius::from(size / 2.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }))
+    .into()
 }
 
 fn get_current_conversation_phone(app: &SmsWindow) -> Option<String> {

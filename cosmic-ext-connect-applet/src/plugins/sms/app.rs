@@ -11,9 +11,10 @@ use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
 use super::actions::SmsMessage;
+use super::avatar::{self, Avatar};
 use super::dbus;
 use super::emoji::EmojiCategory;
-use super::models::{Conversation, Message, ProtocolEvent};
+use super::models::{Conversation, Message, MessageAttachment, ProtocolEvent};
 use super::utils;
 use super::views;
 
@@ -25,6 +26,11 @@ pub struct SmsWindow {
     pub device_name: String,
     pub conversations: Vec<Conversation>,
     pub contacts: HashMap<String, String>,
+    /// Phone -> baked circular avatar, parsed from vcard PHOTO
+    /// properties. Missing entry (not an empty one) means "no photo
+    /// available, show the default placeholder" — see
+    /// `views::view_contact_avatar`.
+    pub contact_photos: HashMap<String, Avatar>,
     pub selected_thread: Option<String>,
     pub messages: Vec<Message>,
     pub message_input: String,
@@ -45,6 +51,9 @@ pub struct SmsWindow {
     /// how it's combined with the phone-reported flag as a bootstrap value
     /// for threads never opened this session.
     pub last_seen_timestamp: HashMap<String, i64>,
+    /// File paths staged via the attach button, sent (and cleared) with
+    /// the next outgoing message.
+    pub pending_attachments: Vec<String>,
 }
 
 impl Application for SmsWindow {
@@ -72,6 +81,7 @@ impl Application for SmsWindow {
             device_name: device_name.clone(),
             conversations: Vec::new(),
             contacts: HashMap::new(),
+            contact_photos: HashMap::new(),
             selected_thread: None,
             messages: Vec::new(),
             message_input: String::new(),
@@ -83,6 +93,7 @@ impl Application for SmsWindow {
             hidden_conversations: kdeconnect_core::hidden_conversations::load_hidden(&device_id),
             pending_delete_thread: None,
             last_seen_timestamp: kdeconnect_core::sms_read_state::load_last_seen(&device_id),
+            pending_attachments: Vec::new(),
         };
 
         let title = fl!("sms-window-title", device = device_name.as_str());
@@ -137,6 +148,12 @@ impl Application for SmsWindow {
                     yield SmsMessage::ContactsLoaded(cached_contacts);
                 }
 
+                let cached_photos = dbus::get_cached_contact_photos(&device_id).await;
+                if !cached_photos.is_empty() {
+                    debug!("yielding {} cached contact photos at startup", cached_photos.len());
+                    yield SmsMessage::ContactPhotosLoaded(cached_photos);
+                }
+
                 if let Some(cached_json) = dbus::get_cached_sms(&device_id).await {
                     debug!("yielding cached SMS at startup");
                     let (messages, conversations) = dbus::parse_sms_messages(&cached_json);
@@ -183,6 +200,23 @@ impl Application for SmsWindow {
                                 debug!("ContactsReceived {} entries", contacts.len());
                                 yield SmsMessage::ContactsLoaded(contacts);
                             }
+                            ServiceEvent::SmsAttachmentReceived(filename, path) => {
+                                debug!("SmsAttachmentReceived {} -> {}", filename, path);
+                                yield SmsMessage::AttachmentReceived(filename, path.into());
+                            }
+                            ServiceEvent::ContactPhotosReceived(photos) => {
+                                debug!("ContactPhotosReceived {} entries", photos.len());
+                                let decoded: HashMap<String, Vec<u8>> = photos
+                                    .into_iter()
+                                    .filter_map(|(phone, b64)| {
+                                        kdeconnect_core::contacts::decode_photo(&b64)
+                                            .map(|bytes| (phone, bytes))
+                                    })
+                                    .collect();
+                                if !decoded.is_empty() {
+                                    yield SmsMessage::ContactPhotosLoaded(decoded);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -214,6 +248,115 @@ impl Application for SmsWindow {
                 self.contacts = contacts;
                 self.update_conversation_names();
             }
+            SmsMessage::ContactPhotosLoaded(photos) => {
+                debug!("ContactPhotosLoaded: {} photos, baking off the UI thread", photos.len());
+                return cosmic::task::future(async move {
+                    let baked = tokio::task::spawn_blocking(move || {
+                        photos
+                            .into_iter()
+                            .filter_map(|(phone, raw)| {
+                                avatar::make_circular(&raw, avatar::BAKE_SIZE).map(|a| (phone, a))
+                            })
+                            .collect::<HashMap<String, Avatar>>()
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        warn!("avatar baking task panicked: {}", e);
+                        HashMap::new()
+                    });
+                    Action::App(SmsMessage::AvatarsBaked(baked))
+                });
+            }
+            SmsMessage::AvatarsBaked(baked) => {
+                debug!("AvatarsBaked: {} avatars", baked.len());
+                self.contact_photos.extend(baked);
+            }
+            SmsMessage::RequestFullAttachment { part_id, unique_identifier } => {
+                debug!("RequestFullAttachment part_id={}", part_id);
+                let device_id = self.device_id.clone();
+                return cosmic::task::future(async move {
+                    dbus::request_sms_attachment(&device_id, part_id, &unique_identifier).await;
+                    Action::None
+                });
+            }
+            SmsMessage::AttachmentReceived(filename, path) => {
+                debug!("AttachmentReceived {} -> {:?}", filename, path);
+                for msg in &mut self.messages {
+                    for attachment in &mut msg.attachments {
+                        if attachment.unique_identifier.as_deref() == Some(filename.as_str()) {
+                            attachment.full_path = Some(path.clone());
+                        }
+                    }
+                }
+            }
+            SmsMessage::OpenAttachment(path) => {
+                debug!("OpenAttachment {:?}", path);
+                return cosmic::task::future(async move {
+                    if let Err(e) = tokio::process::Command::new("xdg-open").arg(&path).spawn() {
+                        warn!("failed to open attachment {:?}: {}", path, e);
+                    }
+                    Action::None
+                });
+            }
+            SmsMessage::SaveAttachment(path) => {
+                debug!("SaveAttachment {:?}", path);
+                return cosmic::task::future(async move {
+                    let suggested_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "attachment".to_string());
+
+                    let Some(dest) =
+                        crate::portal::save_file(fl!("sms-save-attachment-title"), suggested_name).await
+                    else {
+                        debug!("save attachment cancelled");
+                        return Action::None;
+                    };
+                    let dest_path = std::path::PathBuf::from(dest);
+
+                    match tokio::fs::copy(&path, &dest_path).await {
+                        Ok(_) => {
+                            info!("saved attachment to {:?}", dest_path);
+                            let dest_display = dest_path.display().to_string();
+                            tokio::task::spawn_blocking(move || {
+                                let _ = notify_rust::Notification::new()
+                                    .appname("KDE Connect")
+                                    .summary(&fl!("sms-save-success-summary"))
+                                    .body(&dest_display)
+                                    .icon("emblem-ok-symbolic")
+                                    .show();
+                            });
+                        }
+                        Err(e) => {
+                            warn!("failed to save attachment to {:?}: {}", dest_path, e);
+                            tokio::task::spawn_blocking(move || {
+                                let _ = notify_rust::Notification::new()
+                                    .appname("KDE Connect")
+                                    .summary(&fl!("sms-save-failed-summary"))
+                                    .icon("dialog-error-symbolic")
+                                    .show();
+                            });
+                        }
+                    }
+                    Action::None
+                });
+            }
+            SmsMessage::PickAttachment => {
+                return cosmic::task::future(async move {
+                    let paths = crate::portal::pick_files(fl!("sms-attach-picker-title"), true, None)
+                        .await;
+                    Action::App(SmsMessage::AttachmentsPicked(paths))
+                });
+            }
+            SmsMessage::AttachmentsPicked(paths) => {
+                debug!("AttachmentsPicked: {} file(s)", paths.len());
+                self.pending_attachments.extend(paths);
+            }
+            SmsMessage::RemovePendingAttachment(index) => {
+                if index < self.pending_attachments.len() {
+                    self.pending_attachments.remove(index);
+                }
+            }
             SmsMessage::SelectThread(thread_id) => {
                 debug!("SelectThread: {}", thread_id);
                 if let Some(conv) = self.conversations.iter().find(|c| c.thread_id == thread_id) {
@@ -242,7 +385,7 @@ impl Application for SmsWindow {
                 self.search_query = query;
             }
             SmsMessage::SendMessage => {
-                if self.message_input.trim().is_empty() {
+                if self.message_input.trim().is_empty() && self.pending_attachments.is_empty() {
                     return Task::none();
                 }
                 let Some(thread_id) = self.selected_thread.clone() else {
@@ -256,7 +399,27 @@ impl Application for SmsWindow {
                 let device_id = self.device_id.clone();
                 let phone = conv.phone_number.clone();
                 let text = self.message_input.clone();
+                let attachments = std::mem::take(&mut self.pending_attachments);
                 let now = utils::now_millis();
+
+                // We already have these files locally, so show them
+                // immediately rather than waiting on a server round-trip —
+                // this also covers the case where the phone never echoes
+                // back a thumbnail for our own outgoing attachment.
+                let echo_attachments: Vec<MessageAttachment> = attachments
+                    .iter()
+                    .map(|path| {
+                        let path = std::path::PathBuf::from(path);
+                        let mime_type = kdeconnect_core::plugins::sms::guess_mime_type(&path);
+                        MessageAttachment {
+                            part_id: 0,
+                            unique_identifier: None,
+                            mime_type,
+                            thumbnail: None,
+                            full_path: Some(path),
+                        }
+                    })
+                    .collect();
 
                 self.messages.push(Message {
                     id: format!("sending_{}", now),
@@ -264,6 +427,7 @@ impl Application for SmsWindow {
                     body: text.clone(),
                     address: phone.clone(),
                     date: now,
+                    attachments: echo_attachments,
                     type_: 2,
                     read: true,
                 });
@@ -287,7 +451,7 @@ impl Application for SmsWindow {
                 return Task::batch(vec![
                     scroll_task.map(|_: cosmic::widget::Id| Action::App(SmsMessage::RefreshThread)),
                     cosmic::task::future(async move {
-                        dbus::send_sms(&device_id, &phone, &text).await;
+                        dbus::send_sms(&device_id, &phone, &text, attachments).await;
                         Action::App(SmsMessage::RefreshThread)
                     }),
                 ]);
