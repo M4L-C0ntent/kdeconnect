@@ -65,6 +65,43 @@ pub fn try_load_cosmic_accent() -> Option<cosmic::iced::Color> {
     })
 }
 
+/// Builds a full host-matched `cosmic::Theme` (dark/light palette + accent),
+/// suitable for `cosmic::app::Settings::theme(...)`.
+///
+/// The header bar — including the close/maximize/minimize icons — is drawn
+/// by the libcosmic framework from its global theme, not by our own widget
+/// code, and that global theme defaults to a `System` lookup that resolves
+/// to the Flatpak sandbox (see module docs). Passing a `Theme::custom(..)`
+/// here at startup sidesteps that lookup for the whole window, header bar
+/// included, instead of re-colouring individual icons we don't draw.
+pub fn try_load_cosmic_theme() -> Option<cosmic::Theme> {
+    let home = dirs::home_dir()?;
+    let cosmic_cfg = home.join(".config").join("cosmic");
+
+    let is_dark = std::fs::read_to_string(
+        cosmic_cfg
+            .join("com.system76.CosmicTheme.Mode")
+            .join("v1")
+            .join("is_dark"),
+    )
+    .map(|s| s.trim() == "true")
+    .unwrap_or(true);
+
+    let accent = try_load_cosmic_accent().unwrap_or(FALLBACK_TEAL);
+    let accent =
+        cosmic::cosmic_theme::palette::rgb::Srgba::new(accent.r, accent.g, accent.b, accent.a);
+
+    let base = if is_dark {
+        cosmic::cosmic_theme::Theme::dark_default()
+    } else {
+        cosmic::cosmic_theme::Theme::light_default()
+    };
+
+    Some(cosmic::Theme::custom(std::sync::Arc::new(
+        base.with_accent(accent),
+    )))
+}
+
 /// A `Button::Custom` class that mirrors `Button::Text` but overrides the text
 /// colour with the host's real accent. Needed because `Button::Text`'s default
 /// styling pulls from the sandboxed (always-teal) theme under Flatpak.
