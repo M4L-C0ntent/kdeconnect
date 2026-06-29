@@ -948,7 +948,10 @@ impl SettingsApp {
 }
 
 fn main() -> cosmic::iced::Result {
-    let settings = cosmic::app::Settings::default()
+    let mut settings = cosmic::app::Settings::default()
         .size(cosmic::iced::Size::new(740.0, 540.0));
+    if let Some(theme) = cosmic_ext_connect_applet::theme::try_load_cosmic_theme() {
+        settings = settings.theme(theme);
+    }
     cosmic::app::run::<SettingsApp>(settings, ())
 }
