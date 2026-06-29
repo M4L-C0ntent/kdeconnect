@@ -64,6 +64,9 @@ pub enum SmsMessage {
     /// User wants to open a downloaded attachment in its default external
     /// app (used for video, which iced can't render inline).
     OpenAttachment(std::path::PathBuf),
+    /// User wants to save a downloaded attachment to a location of their
+    /// choosing via the native "Save As" dialog.
+    SaveAttachment(std::path::PathBuf),
 
     /// Opens the native file picker for staging an outgoing attachment.
     PickAttachment,

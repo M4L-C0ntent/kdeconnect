@@ -531,9 +531,10 @@ fn view_messages_list<'a>(
 /// of them render nothing, since a thumbnail-less attachment used to
 /// produce a blank bubble (the bug this replaces):
 /// - already downloaded + image → the full-resolution image (loaded by
-///   path, so iced caches it instead of us re-reading the file)
+///   path, so iced caches it instead of us re-reading the file), plus a
+///   Save button to copy it out via the native "Save As" dialog
 /// - already downloaded + video → an "Open" button (iced can't render
-///   video inline)
+///   video inline) alongside the same Save button
 /// - not downloaded yet → the thumbnail preview if the phone sent one,
 ///   otherwise a generic photo/video placeholder card — either way
 ///   clickable to request the full file, *if* the phone gave it a
@@ -544,13 +545,26 @@ fn view_attachment<'a>(
     attachment: &'a super::models::MessageAttachment,
 ) -> Option<Element<'a, SmsMessage>> {
     if let Some(path) = &attachment.full_path {
+        let save_button = widget::button::icon(widget::icon::from_name("document-save-symbolic").handle())
+            .on_press(SmsMessage::SaveAttachment(path.clone()));
+
         return Some(if attachment.is_video() {
-            widget::button::standard(fl!("sms-open-attachment"))
-                .on_press(SmsMessage::OpenAttachment(path.clone()))
+            widget::Row::new()
+                .push(
+                    widget::button::standard(fl!("sms-open-attachment"))
+                        .on_press(SmsMessage::OpenAttachment(path.clone())),
+                )
+                .push(save_button)
+                .spacing(4)
                 .into()
         } else {
-            widget::image(cosmic::widget::image::Handle::from_path(path))
-                .width(Length::Fixed(220.0))
+            widget::Column::new()
+                .push(
+                    widget::image(cosmic::widget::image::Handle::from_path(path))
+                        .width(Length::Fixed(220.0)),
+                )
+                .push(widget::Row::new().push(widget::space::horizontal()).push(save_button))
+                .spacing(4)
                 .into()
         });
     }

@@ -298,6 +298,49 @@ impl Application for SmsWindow {
                     Action::None
                 });
             }
+            SmsMessage::SaveAttachment(path) => {
+                debug!("SaveAttachment {:?}", path);
+                return cosmic::task::future(async move {
+                    let suggested_name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "attachment".to_string());
+
+                    let Some(dest) =
+                        crate::portal::save_file(fl!("sms-save-attachment-title"), suggested_name).await
+                    else {
+                        debug!("save attachment cancelled");
+                        return Action::None;
+                    };
+                    let dest_path = std::path::PathBuf::from(dest);
+
+                    match tokio::fs::copy(&path, &dest_path).await {
+                        Ok(_) => {
+                            info!("saved attachment to {:?}", dest_path);
+                            let dest_display = dest_path.display().to_string();
+                            tokio::task::spawn_blocking(move || {
+                                let _ = notify_rust::Notification::new()
+                                    .appname("KDE Connect")
+                                    .summary(&fl!("sms-save-success-summary"))
+                                    .body(&dest_display)
+                                    .icon("emblem-ok-symbolic")
+                                    .show();
+                            });
+                        }
+                        Err(e) => {
+                            warn!("failed to save attachment to {:?}: {}", dest_path, e);
+                            tokio::task::spawn_blocking(move || {
+                                let _ = notify_rust::Notification::new()
+                                    .appname("KDE Connect")
+                                    .summary(&fl!("sms-save-failed-summary"))
+                                    .icon("dialog-error-symbolic")
+                                    .show();
+                            });
+                        }
+                    }
+                    Action::None
+                });
+            }
             SmsMessage::PickAttachment => {
                 return cosmic::task::future(async move {
                     let paths = crate::portal::pick_files(fl!("sms-attach-picker-title"), true, None)
