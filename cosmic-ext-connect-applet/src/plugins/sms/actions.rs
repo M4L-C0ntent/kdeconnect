@@ -44,4 +44,21 @@ pub enum SmsMessage {
     /// forward. Local-only — the SMS protocol has no delete packet, so
     /// this never touches the phone's actual messages or conversation.
     ConfirmDeleteConversation,
+
+    /// User tapped a thumbnail that hasn't been fully downloaded yet.
+    RequestFullAttachment { part_id: i64, unique_identifier: String },
+    /// A full-resolution attachment finished downloading. Payload is
+    /// (filename/unique_identifier, saved path) — see
+    /// `kdeconnect_dbus_client::ServiceEvent::SmsAttachmentReceived`.
+    AttachmentReceived(String, std::path::PathBuf),
+    /// User wants to open a downloaded attachment in its default external
+    /// app (used for video, which iced can't render inline).
+    OpenAttachment(std::path::PathBuf),
+
+    /// Opens the native file picker for staging an outgoing attachment.
+    PickAttachment,
+    /// Files chosen from the picker, appended to `pending_attachments`.
+    AttachmentsPicked(Vec<String>),
+    /// Removes one staged attachment by index before sending.
+    RemovePendingAttachment(usize),
 }

@@ -145,6 +145,27 @@ impl PluginRegistry {
             PacketType::BatteryRequest => {
                 debug!("BatteryRequest received — not implemented, ignoring");
             }
+            PacketType::SmsAttachmentFile => {
+                if let Ok(attachment_file) =
+                    serde_json::from_value::<plugins::sms::SmsAttachmentFile>(body)
+                    && let Some(payload_info) = payload_info
+                {
+                    let connection_tx = connection_tx.clone();
+                    // Spawn so the event loop is not blocked while the
+                    // payload (a photo or video) downloads.
+                    tokio::spawn(async move {
+                        let filename = attachment_file.filename.clone();
+                        match attachment_file.receive(&device, &payload_info).await {
+                            Ok(path) => {
+                                let _ = connection_tx.send(ConnectionEvent::SmsAttachmentReceived(
+                                    (device.device_id.clone(), filename, path),
+                                ));
+                            }
+                            Err(e) => warn!("[sms] attachment receive failed: {}", e),
+                        }
+                    });
+                }
+            }
             PacketType::SmsMessages => {
                 debug!("Received SmsMessages packet");
                 if let Ok(sms_messages) =

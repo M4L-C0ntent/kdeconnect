@@ -445,20 +445,18 @@ impl SmsInterface {
         device_id: String,
         phone_number: String,
         message: String,
+        attachments: Vec<String>,
     ) -> zbus::fdo::Result<()> {
         info!(
-            "D-Bus: SendSms called for {} to {}",
-            device_id, phone_number
+            "D-Bus: SendSms called for {} to {} ({} attachment(s))",
+            device_id, phone_number, attachments.len()
         );
-        let packet = ProtocolPacket::new(
-            PacketType::SmsRequest,
-            json!({
-                "sendSms": true,
-                "addresses": [{ "address": phone_number }],
-                "messageBody": message,
-                "version": 2
-            }),
-        );
+        let packet = kdeconnect_core::plugins::sms::build_send_packet(
+            &phone_number,
+            &message,
+            &attachments,
+        )
+        .await;
         self.event_sender
             .send(AppEvent::SendPacket(DeviceId(device_id), packet))
             .map_err(|e| {
@@ -469,11 +467,47 @@ impl SmsInterface {
         Ok(())
     }
 
+    /// Request the full-resolution file for one MMS attachment. The
+    /// result arrives asynchronously via `sms_attachment_received`.
+    async fn request_sms_attachment(
+        &self,
+        device_id: String,
+        part_id: i64,
+        unique_identifier: String,
+    ) -> zbus::fdo::Result<()> {
+        info!(
+            "D-Bus: RequestSmsAttachment called for {} part {}",
+            device_id, part_id
+        );
+        let packet = ProtocolPacket::new(
+            PacketType::SmsRequestAttachment,
+            json!({ "part_id": part_id, "unique_identifier": unique_identifier }),
+        );
+        self.event_sender
+            .send(AppEvent::SendPacket(DeviceId(device_id), packet))
+            .map_err(|e| {
+                error!("Failed to send packet: {}", e);
+                zbus::fdo::Error::Failed(e.to_string())
+            })?;
+        debug!("RequestSmsAttachment sent to core");
+        Ok(())
+    }
+
     /// Signal: SMS messages received
     #[zbus(signal)]
     async fn sms_messages_received(
         signal_emitter: &SignalEmitter<'_>,
         messages_json: String,
+    ) -> zbus::Result<()>;
+
+    /// Signal: a full-resolution MMS attachment finished downloading.
+    /// `filename` is the same `unique_identifier` the request was made
+    /// with — that's how the caller matches this back to a message.
+    #[zbus(signal)]
+    async fn sms_attachment_received(
+        signal_emitter: &SignalEmitter<'_>,
+        filename: String,
+        path: String,
     ) -> zbus::Result<()>;
 }
 
@@ -949,6 +983,22 @@ impl KdeConnectService {
                 ContactsInterface::contacts_received(iface_ref.signal_emitter(), contacts_json)
                     .await?;
                 debug!("Contacts D-Bus signal emitted");
+            }
+            ConnectionEvent::SmsAttachmentReceived((_device_id, filename, path)) => {
+                info!("SMS attachment received: {} -> {:?}", filename, path);
+
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, SmsInterface>(SMS_PATH)
+                    .await?;
+
+                SmsInterface::sms_attachment_received(
+                    iface_ref.signal_emitter(),
+                    filename,
+                    path.display().to_string(),
+                )
+                .await?;
+                debug!("SmsAttachmentReceived D-Bus signal emitted");
             }
             ConnectionEvent::UpdateTransferProgress(progress) => {
                 info!("Current transfer progress: {}%", progress);

@@ -517,6 +517,82 @@ fn view_messages_list<'a>(
         .into()
 }
 
+/// Renders one MMS attachment. Three states, and — unlike before — none
+/// of them render nothing, since a thumbnail-less attachment used to
+/// produce a blank bubble (the bug this replaces):
+/// - already downloaded + image → the full-resolution image (loaded by
+///   path, so iced caches it instead of us re-reading the file)
+/// - already downloaded + video → an "Open" button (iced can't render
+///   video inline)
+/// - not downloaded yet → the thumbnail preview if the phone sent one,
+///   otherwise a generic photo/video placeholder card — either way
+///   clickable to request the full file, *if* the phone gave it a
+///   `unique_identifier` to request by. Video in particular routinely has
+///   no thumbnail at all in this protocol, so the placeholder path is the
+///   common case for video, not a rare fallback.
+fn view_attachment<'a>(
+    attachment: &'a super::models::MessageAttachment,
+) -> Option<Element<'a, SmsMessage>> {
+    if let Some(path) = &attachment.full_path {
+        return Some(if attachment.is_video() {
+            widget::button::standard(fl!("sms-open-attachment"))
+                .on_press(SmsMessage::OpenAttachment(path.clone()))
+                .into()
+        } else {
+            widget::image(cosmic::widget::image::Handle::from_path(path))
+                .width(Length::Fixed(220.0))
+                .into()
+        });
+    }
+
+    let preview: Element<'a, SmsMessage> = match attachment.thumbnail.as_deref() {
+        Some(thumbnail) if !thumbnail.is_empty() => {
+            widget::image(cosmic::widget::image::Handle::from_bytes(thumbnail.to_vec()))
+                .width(Length::Fixed(220.0))
+                .into()
+        }
+        _ => view_attachment_placeholder(attachment),
+    };
+
+    Some(match &attachment.unique_identifier {
+        Some(uid) => widget::mouse_area(preview)
+            .on_press(SmsMessage::RequestFullAttachment {
+                part_id: attachment.part_id,
+                unique_identifier: uid.clone(),
+            })
+            .into(),
+        None => preview,
+    })
+}
+
+/// Generic icon + label card shown in place of a thumbnail when the phone
+/// didn't send one. Video routinely has no thumbnail in this protocol at
+/// all, so this is the normal video appearance, not a rare error state.
+fn view_attachment_placeholder<'a>(
+    attachment: &super::models::MessageAttachment,
+) -> Element<'a, SmsMessage> {
+    let (icon_name, label) = if attachment.is_video() {
+        ("video-x-generic-symbolic", fl!("sms-attachment-video"))
+    } else if attachment.mime_type.starts_with("image/") {
+        ("image-x-generic-symbolic", fl!("sms-attachment-photo"))
+    } else {
+        ("mail-attachment-symbolic", fl!("sms-attachment-generic"))
+    };
+
+    widget::container(
+        widget::Column::new()
+            .push(widget::icon::from_name(icon_name).icon().size(48))
+            .push(widget::text(label).size(12))
+            .spacing(4)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fixed(220.0))
+    .padding(16)
+    .align_x(Alignment::Center)
+    .class(cosmic::theme::Container::List)
+    .into()
+}
+
 fn view_message_bubble<'a>(
     app: &'a SmsWindow,
     msg: &'a super::models::Message,
@@ -537,6 +613,12 @@ fn view_message_bubble<'a>(
                 .size(11)
                 .font(cosmic::font::bold()),
         );
+    }
+
+    for attachment in &msg.attachments {
+        if let Some(element) = view_attachment(attachment) {
+            message_content = message_content.push(element);
+        }
     }
 
     message_content = message_content
@@ -580,6 +662,10 @@ fn view_message_input<'a>(
                 .on_press(SmsMessage::ToggleEmojiPicker),
         )
         .push(
+            widget::button::icon(widget::icon::from_name("mail-attachment-symbolic").handle())
+                .on_press(SmsMessage::PickAttachment),
+        )
+        .push(
             widget::text_input(message_placeholder, &app.message_input)
                 .on_input(SmsMessage::UpdateInput)
                 .on_submit(|_| SmsMessage::SendMessage)
@@ -598,9 +684,49 @@ fn view_message_input<'a>(
     if app.show_emoji_picker {
         col = col.push(view_emoji_picker(app, spacing));
     }
+    if !app.pending_attachments.is_empty() {
+        col = col.push(view_pending_attachments(app, spacing));
+    }
     col = col.push(input_row);
 
     col.padding(spacing.space_s).into()
+}
+
+/// Staged outgoing attachments, shown as a row of removable chips above
+/// the compose bar. Just the filename — no preview thumbnail, since these
+/// are local files we haven't sent yet (not worth a thumbnail decode for
+/// something this transient).
+fn view_pending_attachments<'a>(
+    app: &'a SmsWindow,
+    spacing: &cosmic::cosmic_theme::Spacing,
+) -> Element<'a, SmsMessage> {
+    let mut row = widget::Row::new().spacing(spacing.space_xs);
+    for (index, path) in app.pending_attachments.iter().enumerate() {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+
+        row = row.push(
+            widget::container(
+                widget::Row::new()
+                    .push(widget::text(name).size(12))
+                    .push(
+                        widget::button::icon(widget::icon::from_name("window-close-symbolic").handle())
+                            .on_press(SmsMessage::RemovePendingAttachment(index)),
+                    )
+                    .spacing(spacing.space_xxs)
+                    .align_y(Alignment::Center),
+            )
+            .class(cosmic::theme::Container::Secondary)
+            .padding(spacing.space_xxs),
+        );
+    }
+    widget::scrollable(row)
+        .direction(cosmic::iced::widget::scrollable::Direction::Horizontal(
+            cosmic::iced::widget::scrollable::Scrollbar::new(),
+        ))
+        .into()
 }
 
 /// Emoji picker panel: category tabs + a scrollable grid of emoji for the
