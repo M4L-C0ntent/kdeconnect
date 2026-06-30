@@ -6,9 +6,9 @@
   <project_group>COSMIC</project_group>
   <developer_name>hepp3n</developer_name>
   <update_contact>hepp3n@email.com</update_contact>
-  <url type="homepage">https://github.com/hepp3n/kdeconnect</url>
-  <url type="bugtracker">https://github.com/hepp3n/kdeconnect/issues</url>
-  <url type="contribute">https://github.com/hepp3n/kdeconnect</url>
+  <url type="homepage">https://github.com/cosmic-utils/kdeconnect</url>
+  <url type="bugtracker">https://github.com/cosmic-utils/kdeconnect/issues</url>
+  <url type="contribute">https://github.com/cosmic-utils/kdeconnect</url>
   <content_rating type="oars-1.1" />
   <name>KDE Connect</name>
   <summary>KDE Connect implementation for COSMIC Desktop</summary>
@@ -19,7 +19,7 @@
   </description>
     <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/hepp3n/kdeconnect/refs/heads/master/resources/screenshots/applet.png</image>
+      <image>https://github.com/cosmic-utils/kdeconnect/blob/master/resources/screenshots/applet.png</image>
       <caption>COSMIC Ext Connect Main Applet Window</caption>
       <caption xml:lang="cs">Hlavní okno appletu COSMIC Ext Connect</caption>
      </screenshot>
