@@ -6,9 +6,9 @@
   <project_group>COSMIC</project_group>
   <developer_name>hepp3n</developer_name>
   <update_contact>hepp3n@email.com</update_contact>
-  <url type="homepage">https://github.com/hepp3n/kdeconnect</url>
-  <url type="bugtracker">https://github.com/hepp3n/kdeconnect/issues</url>
-  <url type="contribute">https://github.com/hepp3n/kdeconnect</url>
+  <url type="homepage">https://github.com/cosmic-utils/kdeconnect</url>
+  <url type="bugtracker">https://github.com/cosmic-utils/kdeconnect/issues</url>
+  <url type="contribute">https://github.com/cosmic-utils/kdeconnect</url>
   <content_rating type="oars-1.1" />
   <name>KDE Connect</name>
   <summary>KDE Connect implementation for COSMIC Desktop</summary>
@@ -19,7 +19,7 @@
   </description>
     <screenshots>
     <screenshot type="default">
-      <image>https://raw.githubusercontent.com/hepp3n/kdeconnect/refs/heads/master/resources/screenshots/applet.png</image>
+      <image>https://github.com/cosmic-utils/kdeconnect/blob/master/resources/screenshots/applet.png</image>
       <caption>COSMIC Ext Connect Main Applet Window</caption>
       <caption xml:lang="cs">Hlavní okno appletu COSMIC Ext Connect</caption>
      </screenshot>
@@ -44,19 +44,26 @@
   <releases>
     <!-- Latest Version -->
     <release version="0.9.0" date="29.06.2026">
-      <url type="details">https://github.com/hepp3n/kdeconnect</url>
+      <url type="details">https://github.com/cosmic-utils/kdeconnect</url>
       <description>
-        <p>This is WORK IN PROGRESS release</p>
+        <p>The is the new version with the following changes:</p>
         <ul>
-          <li>Please keep in mind, many things working but you might experience bugs. Please report them under Github in issues section.</li>
-          <li>This version brings new features and bug fixes from the originial.</li>
-          <li>Testing is still needed before release of version 1. Please report any bugs you find.</li>
+          <li>Uses hybrid D-Bus / Varlink</li>
+          <li>Improved SMS UI with added features (Hide Conversations, Unread indicators, Import contact photos, and able to send / receive media attachments) </li>
+          <li>Browse Files Plugin now implemented (Requires package sshfs)</li>
+          <li>Media controls with album art added to drop menu (Can still be controled from panel controls)</li>
+          <li>Various Bug Fixes</li>
+          <li>
+          <li>Please keep in mind, this is still a WIP - many things working but you might experience bugs.</li>
+          <li>Please report them under Github in issues section.</li>
+          <li>This new version still requires more testing before the release of v1.</li>
+          <li>
         </ul>
       </description>
     </release>
     <!-- Previous Version -->
     <release version="0.1.0" date="11.03.2026">
-     <url type="details">https://github.com/hepp3n/kdeconnect</url>
+     <url type="details">https://github.com/cosmic-utils/kdeconnect</url>
      <description>
        <p>This is WORK IN PROGRESS release</p>
        <ul>
