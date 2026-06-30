@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate cosmic_ext_connect_applet;
 
-use cosmic_ext_connect_applet::{backend, messages, models, portal, ui};
+use cosmic_ext_connect_applet::{backend, messages, models, plugin_config, portal, ui};
 
 use messages::Message;
 use models::Device;
@@ -23,6 +23,8 @@ pub struct KdeConnectApplet {
     /// Pending pairing requests: device_id → device_name
     pairing_requests: HashMap<String, String>,
     accent_color: cosmic::iced::Color,
+    /// Last known clipboard content — used for change detection in auto-sync
+    last_clipboard: Option<String>,
 }
 
 impl cosmic::Application for KdeConnectApplet {
@@ -53,6 +55,7 @@ impl cosmic::Application for KdeConnectApplet {
             pairing_requests: HashMap::new(),
             accent_color: theme::try_load_cosmic_accent()
                 .unwrap_or(theme::FALLBACK_TEAL),
+            last_clipboard: None,
         };
 
         (app, Task::none())
@@ -234,6 +237,52 @@ impl cosmic::Application for KdeConnectApplet {
                     );
                 }
             }
+            Message::ClipboardPoll => {
+                return cosmic::iced::clipboard::read().map(|content| {
+                    cosmic::Action::App(Message::ClipboardMaybeSend(
+                        content.unwrap_or_default(),
+                    ))
+                });
+            }
+            Message::ClipboardMaybeSend(ref content) => {
+                if content.is_empty()
+                    || self.last_clipboard.as_deref() == Some(content)
+                {
+                    return Task::none();
+                }
+                self.last_clipboard = Some(content.clone());
+
+                let targets: Vec<String> = self
+                    .devices
+                    .iter()
+                    .filter(|(_, d)| d.is_paired && d.is_reachable)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+
+                if targets.is_empty() {
+                    return Task::none();
+                }
+
+                let content = content.clone();
+                return Task::perform(
+                    async move {
+                        for device_id in targets {
+                            let cfg =
+                                plugin_config::ClipboardPluginConfig::load(&device_id)
+                                    .unwrap_or_default();
+                            if cfg.auto_share {
+                                let _ = backend::send_clipboard(
+                                    device_id,
+                                    content.clone(),
+                                )
+                                .await;
+                            }
+                        }
+                    },
+                    |_| cosmic::Action::App(Message::Noop),
+                );
+            }
+            Message::Noop => {}
             Message::ClipboardReceived(content) => {
                 return cosmic::iced::clipboard::write::<cosmic::Action<Message>>(content);
             }
@@ -408,6 +457,8 @@ impl cosmic::Application for KdeConnectApplet {
         Subscription::batch(vec![
             cosmic::iced::time::every(std::time::Duration::from_secs(10))
                 .map(|_| Message::RefreshDevices),
+            cosmic::iced::time::every(std::time::Duration::from_secs(1))
+                .map(|_| Message::ClipboardPoll),
             backend::filetransfer_subscription(),
             backend::service_watcher_subscription(),
             // D-Bus event stream — delivers pairing requests and device state
