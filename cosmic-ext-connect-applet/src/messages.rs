@@ -6,6 +6,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub enum Message {
     TogglePopup,
+    Noop,
     PopupClosed(cosmic::iced::window::Id),
     RefreshDevices,
     DevicesUpdated(Vec<Device>),
@@ -30,6 +31,10 @@ pub enum Message {
     ClipboardReceived(String),
     // Desktop clipboard read result — content forwarded to device
     ClipboardReadForDevice(String, String), // device_id, content
+    // Periodic desktop clipboard poll tick (auto-sync watcher)
+    PollClipboard,
+    // Poll result — only fires update when content actually changed
+    ClipboardChanged(String),
 
     // Battery and connectivity updates — patch device in place without full refresh
     BatteryUpdated(String, i32, bool),  // device_id, level, is_charging

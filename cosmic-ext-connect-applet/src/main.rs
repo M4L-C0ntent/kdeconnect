@@ -13,7 +13,7 @@ use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get
 use cosmic::{Element, Task, widget};
 use std::collections::HashMap;
 use cosmic_ext_connect_applet::theme;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 pub struct KdeConnectApplet {
     core: Core,
@@ -32,6 +32,9 @@ pub struct KdeConnectApplet {
     /// Media section state, keyed by MPRIS D-Bus bus name. Refreshed by
     /// `backend::mpris_subscription`.
     now_playing: HashMap<String, NowPlaying>,
+    /// Last desktop clipboard content seen by the auto-sync poller, used to
+    /// detect changes without re-sending unchanged content every tick.
+    last_clipboard: Option<String>,
 }
 
 impl KdeConnectApplet {
@@ -90,6 +93,7 @@ impl cosmic::Application for KdeConnectApplet {
             unread_sms: HashMap::new(),
             error_banner: None,
             now_playing: HashMap::new(),
+            last_clipboard: None,
         };
 
         (app, Task::none())
@@ -100,6 +104,7 @@ impl cosmic::Application for KdeConnectApplet {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {        match message {
+            Message::Noop => {}
             Message::TogglePopup => {
                 self.accent_color = theme::try_load_cosmic_accent()
                     .unwrap_or(theme::FALLBACK_TEAL);
@@ -274,6 +279,62 @@ impl cosmic::Application for KdeConnectApplet {
             }
             Message::ClipboardReceived(content) => {
                 return cosmic::iced::clipboard::write::<cosmic::Action<Message>>(content);
+            }
+            Message::PollClipboard => {
+                let last = self.last_clipboard.clone();
+                return Task::perform(
+                    async move {
+                        // wl-clipboard-rs does a blocking Wayland round-trip.
+                        tokio::task::spawn_blocking(move || {
+                            use wl_clipboard_rs::paste::{ClipboardType, Error, MimeType, Seat, get_contents};
+                            match get_contents(ClipboardType::Regular, Seat::Unspecified, MimeType::Text) {
+                                Ok((mut pipe, _)) => {
+                                    let mut buf = String::new();
+                                    std::io::Read::read_to_string(&mut pipe, &mut buf).ok()?;
+                                    (!buf.is_empty() && Some(&buf) != last.as_ref()).then_some(buf)
+                                }
+                                // No selection yet, or compositor doesn't expose data-control — not an error worth logging every 2s.
+                                Err(Error::NoSeats) | Err(Error::ClipboardEmpty) | Err(Error::NoMimeType) => None,
+                                Err(e) => {
+                                    warn!("clipboard poll failed: {e}");
+                                    None
+                                }
+                            }
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                    },
+                    |content| match content {
+                        Some(c) => cosmic::Action::App(Message::ClipboardChanged(c)),
+                        None => cosmic::Action::App(Message::Noop),
+                    },
+                );
+            }
+            Message::ClipboardChanged(content) => {
+                self.last_clipboard = Some(content.clone());
+                let targets: Vec<String> = self
+                    .devices
+                    .values()
+                    .filter(|d| d.is_paired && d.is_reachable && d.has_clipboard)
+                    .map(|d| d.id.clone())
+                    .collect();
+                info!(
+                    "clipboard changed ({} bytes), auto-sending to {} device(s)",
+                    content.len(),
+                    targets.len()
+                );
+                let content = content.clone();
+                return Task::perform(
+                    async move {
+                        for id in targets {
+                            if !backend::get_disabled_plugins(id.clone()).await.iter().any(|p| p == "clipboard") {
+                                backend::send_clipboard(id, content.clone()).await.ok();
+                            }
+                        }
+                    },
+                    |_| cosmic::Action::App(Message::RefreshDevices),
+                );
             }
             Message::BatteryUpdated(device_id, level, charging) => {
                 if let Some(device) = self.devices.get_mut(&device_id) {
@@ -459,6 +520,11 @@ impl cosmic::Application for KdeConnectApplet {
         Subscription::batch(vec![
             cosmic::iced::time::every(std::time::Duration::from_secs(10))
                 .map(|_| Message::RefreshDevices),
+            // Desktop clipboard auto-sync: KDE Connect's Android app doesn't push
+            // OS-level clipboard-change events over D-Bus, so poll like upstream
+            // kdeconnect-kde's ClipboardListener does.
+            cosmic::iced::time::every(std::time::Duration::from_secs(2))
+                .map(|_| Message::PollClipboard),
             backend::filetransfer_subscription(),
             backend::service_watcher_subscription(),
             backend::mpris_subscription(),
