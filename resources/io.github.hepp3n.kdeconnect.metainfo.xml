@@ -42,14 +42,27 @@
     <internet>always</internet>
   </recommends>
   <releases>
+    <!-- Latest Version -->
     <release version="0.9.0" date="29.06.2026">
       <url type="details">https://github.com/hepp3n/kdeconnect</url>
       <description>
         <p>This is WORK IN PROGRESS release</p>
         <ul>
           <li>Please keep in mind, many things working but you might experience bugs. Please report them under Github in issues section.</li>
+          <li>This version brings new features and bug fixes from the originial.</li>
+          <li>Testing is still needed before release of version 1. Please report any bugs you find.</li>
         </ul>
       </description>
+    </release>
+    <!-- Previous Version -->
+    <release version="0.1.0" date="11.03.2026">
+     <url type="details">https://github.com/hepp3n/kdeconnect</url>
+     <description>
+       <p>This is WORK IN PROGRESS release</p>
+       <ul>
+         <li>Please keep in mind, many things working but you might experience bugs. Please report them under Github in issues section.</li>
+       </ul>
+     </description>
     </release>
   </releases>
 </component>
