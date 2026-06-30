@@ -27,6 +27,11 @@ pub enum Message {
     ClipboardReceived(String),
     // Desktop clipboard read result — content forwarded to device
     ClipboardReadForDevice(String, String), // device_id, content
+    // Periodic clipboard poll for auto-sync — reads desktop clipboard
+    ClipboardPoll,
+    // Clipboard content ready to check — send to devices if changed and auto_share enabled
+    ClipboardMaybeSend(String),
+    Noop,
 
     // Battery and connectivity updates — patch device in place without full refresh
     BatteryUpdated(String, i32, bool),  // device_id, level, is_charging
