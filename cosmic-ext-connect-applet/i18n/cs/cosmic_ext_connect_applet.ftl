@@ -14,6 +14,9 @@ devices-none-paired = Žádná spárovaná zařízení
 devices-offline = Offline
 devices-not-reachable = Zařízení není dosažitelné
 
+# Media section (popup)
+media-header = Nyní hraje
+
 # Quick actions (popup)
 quick-actions-header = Rychlé akce
 quick-actions-ping = Ping
@@ -89,6 +92,14 @@ plugin-telephony-desc = Zobrazí oznámení o příchozích, zmeškaných a prob
 # SMS app
 sms-window-title = SMS - { $device }
 sms-search-placeholder = Hledat konverzace...
+sms-open-attachment = Otevřít
+sms-attach-picker-title = Připojit soubor
+sms-attachment-photo = Fotografie
+sms-attachment-video = Video
+sms-attachment-generic = Příloha
+sms-save-attachment-title = Uložit přílohu
+sms-save-success-summary = Příloha byla uložena
+sms-save-failed-summary = Nepodařilo se uložit přílohu
 sms-no-conversations = Žádné konverzace
 sms-no-matching-conversations = Žádné odpovídající konverzace
 sms-select-conversation = Vyberte konverzaci pro zobrazení zpráv
@@ -116,6 +127,12 @@ sms-new-chat-showing =
         [few] kontakty
         *[other] kontaktů
     }
+
+# SMS delete confirmation dialog
+sms-delete-confirm-title = Smazat konverzaci?
+sms-delete-confirm-body = Tímto odstraníte konverzaci s { $name } pouze z tohoto zařízení — nebude smazána z vašeho telefonu a nové zprávy v této konverzaci budou nadále skryty.
+sms-delete-confirm-action = Smazat
+sms-delete-confirm-cancel = Zrušit
 
 # Emoji categories
 emoji-smileys = Smajlíci
