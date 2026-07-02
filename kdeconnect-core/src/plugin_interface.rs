@@ -267,15 +267,9 @@ impl PluginRegistry {
             }
             PacketType::ClipboardConnect => {
                 if let Ok(clipboard) = serde_json::from_value::<Clipboard>(body) {
-                    // Comparing the remote timestamp with `now` rejects every
-                    // packet after normal network latency and is invalid when
-                    // the two devices' clocks differ. Echo suppression belongs
-                    // to the desktop clipboard worker instead.
-                    info!(
-                        "Clipboard sync on connect accepted (remote_ts={:?})",
-                        clipboard.timestamp
-                    );
-                    clipboard.received_packet(connection_tx).await;
+                    // The service owns the local clipboard timestamp and makes
+                    // the same new-enough decision as upstream KDE Connect.
+                    clipboard.received_connect_packet(connection_tx).await;
                 }
             }
             PacketType::MousePadKeyboardState => {

@@ -16,4 +16,14 @@ impl Clipboard {
             self.content.clone(),
         ));
     }
+
+    pub async fn received_connect_packet(
+        &self,
+        event: mpsc::UnboundedSender<crate::event::ConnectionEvent>,
+    ) {
+        let _ = event.send(crate::event::ConnectionEvent::ClipboardConnectReceived {
+            content: self.content.clone(),
+            timestamp: self.timestamp,
+        });
+    }
 }

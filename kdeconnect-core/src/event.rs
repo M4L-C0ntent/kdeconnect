@@ -69,6 +69,10 @@ pub enum AppEvent {
 #[derive(Debug, Clone)]
 pub enum ConnectionEvent {
     ClipboardReceived(String),
+    ClipboardConnectReceived {
+        content: String,
+        timestamp: Option<u64>,
+    },
     Connected((DeviceId, Device)),
     DevicePaired((DeviceId, Device)),
     Disconnected(DeviceId),

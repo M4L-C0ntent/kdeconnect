@@ -207,6 +207,61 @@ pub(crate) async fn send_clipboard_packet(
     }
 }
 
+async fn send_clipboard_connect_when_ready(
+    event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
+    device_id: String,
+    clipboard: Option<ClipboardHandle>,
+) {
+    let Some(clipboard) = clipboard else {
+        debug!("Not sending clipboard.connect to {device_id}: clipboard backend unavailable");
+        return;
+    };
+    if kdeconnect_core::plugin_config::load_disabled_plugins(&device_id)
+        .await
+        .contains("clipboard")
+    {
+        return;
+    }
+    let config = clipboard::load_plugin_config(&device_id).await;
+    if !config.auto_share {
+        return;
+    }
+
+    // The initial Wayland offer is read asynchronously. Give it a short time
+    // to seed the cache when a device connects during service startup.
+    let mut content = clipboard.current();
+    for _ in 0..20 {
+        if content.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        content = clipboard.current();
+    }
+    let Some(content) = content else {
+        debug!("Not sending clipboard.connect to {device_id}: desktop clipboard is empty");
+        return;
+    };
+    if content.sensitive && !config.send_password {
+        debug!("Not sending clipboard.connect to {device_id}: clipboard is sensitive");
+        return;
+    }
+
+    let packet = ProtocolPacket::new(
+        PacketType::ClipboardConnect,
+        json!({
+            "content": content.text,
+            "timestamp": content.timestamp,
+        }),
+    );
+    match event_sender.send(AppEvent::SendPacket(DeviceId(device_id.clone()), packet)) {
+        Ok(()) => debug!(
+            "Queued clipboard.connect for {} with timestamp {}",
+            device_id, content.timestamp
+        ),
+        Err(error) => error!("Failed to queue clipboard.connect for {device_id}: {error}"),
+    }
+}
+
 #[interface(name = "io.github.hepp3n.kdeconnect.Daemon")]
 impl DaemonInterface {
     /// List all known devices
@@ -950,6 +1005,7 @@ impl KdeConnectService {
                     .object_server()
                     .interface::<_, DaemonInterface>(DAEMON_PATH)
                     .await?;
+                let clipboard = { iface_ref.get().await.clipboard.clone() };
 
                 DaemonInterface::device_connected(
                     iface_ref.signal_emitter(),
@@ -968,6 +1024,12 @@ impl KdeConnectService {
 
                 if is_paired {
                     let did = device_id.0.clone();
+
+                    tokio::spawn(send_clipboard_connect_when_ready(
+                        event_sender.clone(),
+                        did.clone(),
+                        clipboard,
+                    ));
 
                     if let Some(cached) = load_contacts_cache(&did).await {
                         if let Ok(contacts_json) = serde_json::to_string(&cached) {
@@ -1020,6 +1082,7 @@ impl KdeConnectService {
                     .object_server()
                     .interface::<_, DaemonInterface>(DAEMON_PATH)
                     .await?;
+                let clipboard = { iface_ref.get().await.clipboard.clone() };
 
                 DaemonInterface::device_paired(
                     iface_ref.signal_emitter(),
@@ -1028,6 +1091,12 @@ impl KdeConnectService {
                 )
                 .await?;
                 debug!("Device paired signal emitted");
+
+                tokio::spawn(send_clipboard_connect_when_ready(
+                    event_sender.clone(),
+                    device_id.0.clone(),
+                    clipboard,
+                ));
 
                 let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
                     event_type: "device_paired".into(),
@@ -1254,6 +1323,46 @@ impl KdeConnectService {
                     .await?;
                 debug!("ClipboardReceived D-Bus signal emitted");
 
+                let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
+                    event_type: "clipboard_received".into(),
+                    device_id: current_device_id.lock().await.clone().unwrap_or_default(),
+                    clipboard_content: Some(content),
+                    ..Default::default()
+                });
+            }
+            ConnectionEvent::ClipboardConnectReceived { content, timestamp } => {
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, DaemonInterface>(DAEMON_PATH)
+                    .await?;
+                let clipboard = { iface_ref.get().await.clipboard.clone() };
+                let local_timestamp = clipboard
+                    .as_ref()
+                    .and_then(ClipboardHandle::current)
+                    .map_or(0, |content| content.timestamp);
+
+                if !clipboard::should_accept_connect(timestamp, local_timestamp) {
+                    info!(
+                        "Ignored clipboard.connect: remote timestamp {:?}, local timestamp {}",
+                        timestamp, local_timestamp
+                    );
+                    return Ok(());
+                }
+
+                info!(
+                    "Accepted clipboard.connect ({} bytes, remote timestamp {:?}, local timestamp {})",
+                    content.len(), timestamp, local_timestamp
+                );
+                if let Some(clipboard) = clipboard {
+                    if let Err(error) = clipboard.set_text(content.clone()) {
+                        error!("Failed to write connected device clipboard to desktop: {error}");
+                    }
+                } else {
+                    error!("Cannot write connected device clipboard: background clipboard access unavailable");
+                }
+
+                DaemonInterface::clipboard_received(iface_ref.signal_emitter(), content.clone())
+                    .await?;
                 let _ = broadcast_tx.send(crate::varlink_server::VarlinkEvent {
                     event_type: "clipboard_received".into(),
                     device_id: current_device_id.lock().await.clone().unwrap_or_default(),

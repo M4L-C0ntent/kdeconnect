@@ -45,6 +45,10 @@ const MAX_CLIPBOARD_BYTES: u64 = 16 * 1024 * 1024;
 pub struct ClipboardContent {
     pub text: String,
     pub sensitive: bool,
+    /// Milliseconds since Unix epoch when this desktop selection changed.
+    /// Initial state discovered at service startup uses 0 because its real age
+    /// is unknown, matching KDE Connect's clipboard.connect semantics.
+    pub timestamp: u64,
 }
 
 #[derive(Debug)]
@@ -157,6 +161,7 @@ impl WorkerState {
             *current = Some(ClipboardContent {
                 text,
                 sensitive: false,
+                timestamp: now_millis(),
             });
         }
     }
@@ -169,6 +174,7 @@ impl WorkerState {
     ) {
         self.selection_generation = self.selection_generation.wrapping_add(1);
         let generation = self.selection_generation;
+        let timestamp = if publish { now_millis() } else { 0 };
 
         if let Some(previous) = self.selection_offer.take() {
             self.offers.remove(&previous.id());
@@ -227,7 +233,11 @@ impl WorkerState {
                     None
                 }
                 Ok(_) => match String::from_utf8(bytes) {
-                    Ok(text) if !text.is_empty() => Some(ClipboardContent { text, sensitive }),
+                    Ok(text) if !text.is_empty() => Some(ClipboardContent {
+                        text,
+                        sensitive,
+                        timestamp,
+                    }),
                     Ok(_) => None,
                     Err(error) => {
                         warn!("Clipboard selection is not valid UTF-8: {error}");
@@ -259,11 +269,11 @@ impl WorkerState {
         }
 
         let previous = self.current.read().ok().and_then(|value| value.clone());
-        if let Ok(mut current) = self.current.write() {
-            *current = content.clone();
-        }
 
         let Some(content) = content else {
+            if let Ok(mut current) = self.current.write() {
+                *current = None;
+            }
             self.pending_remote_write = None;
             return;
         };
@@ -277,8 +287,14 @@ impl WorkerState {
 
         // Multiple seats and clipboard owners replacing themselves can produce
         // duplicate selection events for identical text.
-        if previous.as_ref() == Some(&content) {
+        if previous.as_ref().is_some_and(|previous| {
+            previous.text == content.text && previous.sensitive == content.sensitive
+        }) {
             return;
+        }
+
+        if let Ok(mut current) = self.current.write() {
+            *current = Some(content.clone());
         }
 
         // Do not send whatever happened to be in the clipboard before the
@@ -287,6 +303,19 @@ impl WorkerState {
             let _ = self.events.send(ClipboardEvent::Changed(content));
         }
     }
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// KDE Connect applies clipboard.connect only when its timestamp is known and
+/// is at least as new as the local selection.
+pub fn should_accept_connect(remote_timestamp: Option<u64>, local_timestamp: u64) -> bool {
+    remote_timestamp.is_some_and(|timestamp| timestamp != 0 && timestamp >= local_timestamp)
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for WorkerState {
@@ -574,6 +603,15 @@ pub async fn load_plugin_config(device_id: &str) -> ClipboardPluginConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clipboard_connect_timestamp_ordering() {
+        assert!(!super::should_accept_connect(None, 100));
+        assert!(!super::should_accept_connect(Some(0), 0));
+        assert!(!super::should_accept_connect(Some(99), 100));
+        assert!(super::should_accept_connect(Some(100), 100));
+        assert!(super::should_accept_connect(Some(101), 100));
+    }
+
     #[test]
     #[ignore = "requires a running Wayland compositor with ext-data-control-v1"]
     fn data_control_smoke() {
