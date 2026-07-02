@@ -27,14 +27,10 @@ pub enum Message {
     ShareUrl(String),
     UpdateTransferProgress(u8),
 
-    // Clipboard received from phone — written to the desktop clipboard
-    ClipboardReceived(String),
-    // Desktop clipboard read result — content forwarded to device
-    ClipboardReadForDevice(String, String), // device_id, content
-    // Periodic desktop clipboard poll tick (auto-sync watcher)
-    PollClipboard,
-    // Poll result — only fires update when content actually changed
-    ClipboardChanged(String),
+    ClipboardSendFinished {
+        device_id: String,
+        result: Result<(), String>,
+    },
 
     // Battery and connectivity updates — patch device in place without full refresh
     BatteryUpdated(String, i32, bool),  // device_id, level, is_charging

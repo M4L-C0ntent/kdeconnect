@@ -58,6 +58,7 @@ trait Daemon {
     async fn send_ping(&self, device_id: &str, message: &str) -> zbus::Result<()>;
     async fn send_files(&self, device_id: &str, files: Vec<String>) -> zbus::Result<()>;
     async fn send_clipboard(&self, device_id: &str, content: &str) -> zbus::Result<()>;
+    async fn share_clipboard(&self, device_id: &str) -> zbus::Result<()>;
     async fn ring_device(&self, device_id: &str) -> zbus::Result<()>;
     async fn browse_device(&self, device_id: &str) -> zbus::Result<()>;
     async fn set_plugin_enabled(
@@ -223,6 +224,11 @@ impl KdeConnectClient {
     /// Send clipboard content
     pub async fn send_clipboard(&self, device_id: &str, content: &str) -> Result<()> {
         Ok(self.daemon_proxy.send_clipboard(device_id, content).await?)
+    }
+
+    /// Send the current desktop clipboard using the service's data-control backend.
+    pub async fn share_clipboard(&self, device_id: &str) -> Result<()> {
+        Ok(self.daemon_proxy.share_clipboard(device_id).await?)
     }
 
     /// Ring a device (findmyphone)

@@ -15,6 +15,8 @@ use tracing::{debug, error, info, warn};
 use zbus::object_server::SignalEmitter;
 use zbus::{Connection, interface};
 
+use crate::clipboard::{self, ClipboardEvent, ClipboardHandle};
+
 const SERVICE_NAME: &str = "io.github.hepp3n.kdeconnect";
 const DAEMON_PATH: &str = "/io/github/hepp3n/kdeconnect/Daemon";
 const SMS_PATH: &str = "/io/github/hepp3n/kdeconnect/Sms";
@@ -160,6 +162,49 @@ pub(crate) async fn load_sms_cache(device_id: &str) -> Option<String> {
 pub struct DaemonInterface {
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     devices: Arc<Mutex<HashMap<String, DbusDevice>>>,
+    clipboard: Option<ClipboardHandle>,
+}
+
+pub(crate) async fn send_clipboard_packet(
+    event_sender: &mpsc::UnboundedSender<AppEvent>,
+    devices: &Arc<Mutex<HashMap<String, DbusDevice>>>,
+    device_id: String,
+    content: String,
+) -> std::result::Result<(), String> {
+    let device = devices.lock().await.get(&device_id).cloned();
+    let Some(device) = device else {
+        return Err(format!("Unknown device: {device_id}"));
+    };
+    if !device.is_paired {
+        return Err(format!("Device is not paired: {device_id}"));
+    }
+    if !device.is_reachable {
+        return Err(format!("Device is not reachable: {device_id}"));
+    }
+    if kdeconnect_core::plugin_config::load_disabled_plugins(&device_id)
+        .await
+        .contains("clipboard")
+    {
+        return Err(format!(
+            "Clipboard plugin is disabled for device: {device_id}"
+        ));
+    }
+
+    let packet = ProtocolPacket::new(PacketType::Clipboard, json!({ "content": content }));
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    event_sender
+        .send(AppEvent::SendPacketWithReply(
+            DeviceId(device_id),
+            packet,
+            reply_tx,
+        ))
+        .map_err(|error| error.to_string())?;
+
+    match tokio::time::timeout(std::time::Duration::from_secs(2), reply_rx).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("Clipboard send acknowledgement was dropped".to_string()),
+        Err(_) => Err("Clipboard send acknowledgement timed out".to_string()),
+    }
 }
 
 #[interface(name = "io.github.hepp3n.kdeconnect.Daemon")]
@@ -220,11 +265,24 @@ impl DaemonInterface {
     /// Send clipboard content
     async fn send_clipboard(&self, device_id: String, content: String) -> zbus::fdo::Result<()> {
         info!("D-Bus: SendClipboard called for {}", device_id);
-        let packet = ProtocolPacket::new(PacketType::Clipboard, json!({ "content": content }));
-        self.event_sender
-            .send(AppEvent::SendPacket(DeviceId(device_id), packet))
-            .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
-        Ok(())
+        send_clipboard_packet(&self.event_sender, &self.devices, device_id, content)
+            .await
+            .map_err(zbus::fdo::Error::Failed)
+    }
+
+    /// Send the current desktop clipboard. Reading is performed by the
+    /// service's background data-control worker, not by the focused applet.
+    async fn share_clipboard(&self, device_id: String) -> zbus::fdo::Result<()> {
+        let clipboard = self.clipboard.as_ref().ok_or_else(|| {
+            zbus::fdo::Error::Failed(
+                "Background clipboard access is unavailable; ext-data-control-v1 is required"
+                    .to_string(),
+            )
+        })?;
+        let content = clipboard.current().ok_or_else(|| {
+            zbus::fdo::Error::Failed("The current clipboard does not contain text".to_string())
+        })?;
+        self.send_clipboard(device_id, content.text).await
     }
 
     /// Ring a device (findmyphone)
@@ -607,6 +665,7 @@ pub struct KdeConnectService {
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     devices: Arc<Mutex<HashMap<String, DbusDevice>>>,
     sms_cache: Arc<Mutex<Option<String>>>,
+    clipboard: Option<ClipboardHandle>,
 }
 
 impl KdeConnectService {
@@ -626,9 +685,16 @@ impl KdeConnectService {
         let event_sender = self.event_sender.clone();
         let devices = self.devices.clone();
         let sms_cache = self.sms_cache.clone();
+        let clipboard = self.clipboard.clone();
         tokio::spawn(async move {
             if let Err(e) =
-                crate::varlink_server::run_varlink_server(event_sender, devices, sms_cache, broadcast_tx)
+                crate::varlink_server::run_varlink_server(
+                    event_sender,
+                    devices,
+                    sms_cache,
+                    clipboard,
+                    broadcast_tx,
+                )
                     .await
             {
                 warn!("Varlink server exited: {:?}", e);
@@ -681,6 +747,14 @@ impl KdeConnectService {
 
         let devices = Arc::new(Mutex::new(HashMap::new()));
 
+        let (clipboard, clipboard_events) = match clipboard::start() {
+            Ok((handle, events)) => (Some(handle), Some(events)),
+            Err(error) => {
+                error!("Background clipboard synchronization unavailable: {error:#}");
+                (None, None)
+            }
+        };
+
         // Pre-populate known paired devices as offline so list_devices() returns
         // them immediately after reboot, before the phone actively reconnects.
         {
@@ -718,6 +792,7 @@ impl KdeConnectService {
         let daemon_interface = DaemonInterface {
             event_sender: event_sender.clone(),
             devices: devices.clone(),
+            clipboard: clipboard.clone(),
         };
         connection
             .object_server()
@@ -772,6 +847,52 @@ impl KdeConnectService {
             }
         });
 
+        if let Some(mut clipboard_events) = clipboard_events {
+            let devices = devices.clone();
+            let event_sender = event_sender.clone();
+            tokio::spawn(async move {
+                while let Some(event) = clipboard_events.recv().await {
+                    let ClipboardEvent::Changed(content) = event;
+                    let candidates: Vec<DbusDevice> = devices
+                        .lock()
+                        .await
+                        .values()
+                        .filter(|device| device.is_paired && device.is_reachable)
+                        .cloned()
+                        .collect();
+
+                    for device in candidates {
+                        if kdeconnect_core::plugin_config::load_disabled_plugins(&device.id)
+                            .await
+                            .contains("clipboard")
+                        {
+                            continue;
+                        }
+                        let config = clipboard::load_plugin_config(&device.id).await;
+                        if !config.auto_share || (content.sensitive && !config.send_password) {
+                            continue;
+                        }
+
+                        let packet = ProtocolPacket::new(
+                            PacketType::Clipboard,
+                            json!({ "content": content.text.clone() }),
+                        );
+                        if let Err(error) = event_sender.send(AppEvent::SendPacket(
+                            DeviceId(device.id.clone()),
+                            packet,
+                        )) {
+                            error!(
+                                "Failed to queue automatic clipboard for {}: {error}",
+                                device.id
+                            );
+                        } else {
+                            debug!("Automatic clipboard queued for {}", device.id);
+                        }
+                    }
+                }
+            });
+        }
+
         let core_handle = tokio::spawn(async move {
             core.run_event_loop().await;
         });
@@ -789,6 +910,7 @@ impl KdeConnectService {
             event_sender,
             devices,
             sms_cache: sms_cache_for_service,
+            clipboard,
         })
     }
 
@@ -1119,6 +1241,15 @@ impl KdeConnectService {
                     .object_server()
                     .interface::<_, DaemonInterface>(DAEMON_PATH)
                     .await?;
+                let clipboard = { iface_ref.get().await.clipboard.clone() };
+                if let Some(clipboard) = clipboard {
+                    if let Err(error) = clipboard.set_text(content.clone()) {
+                        error!("Failed to write phone clipboard to desktop: {error}");
+                    }
+                } else {
+                    error!("Cannot write phone clipboard: background clipboard access unavailable");
+                }
+
                 DaemonInterface::clipboard_received(iface_ref.signal_emitter(), content.clone())
                     .await?;
                 debug!("ClipboardReceived D-Bus signal emitted");

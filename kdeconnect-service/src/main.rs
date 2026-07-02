@@ -4,6 +4,7 @@ use anyhow::Result;
 use tokio::sync::broadcast;
 use tracing::info;
 
+mod clipboard;
 mod dbus_interface;
 mod varlink_server;
 

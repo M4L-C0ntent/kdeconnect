@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use kdeconnect_varlink::iface::{
     self, BatteryState, Device, VarlinkInterface,
     Call_ListDevices, Call_PairDevice, Call_UnpairDevice, Call_SendPing,
-    Call_SendFiles, Call_SendClipboard, Call_RunCommand,
+    Call_SendFiles, Call_SendClipboard, Call_ShareClipboard, Call_RunCommand,
     Call_RingDevice, Call_BrowseDevice, Call_BroadcastIdentity, Call_RequestRunCommands,
     Call_SetPluginEnabled, Call_GetPluginEnabled, Call_GetDisabledPlugins,
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
@@ -21,6 +21,7 @@ use tokio::sync::{broadcast, mpsc};
 use varlink::{listen_async, ListenAsyncConfig};
 
 use crate::dbus_interface::DbusDevice;
+use crate::clipboard::ClipboardHandle;
 
 // DORMANT: built and broadcast on every device/battery/connectivity/clipboard/
 // pairing/run-command event in dbus_interface.rs, but nothing can actually
@@ -43,6 +44,7 @@ pub struct KdeConnectVarlinkService {
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     devices: Arc<tokio::sync::Mutex<std::collections::HashMap<String, DbusDevice>>>,
     sms_cache: Arc<tokio::sync::Mutex<Option<String>>>,
+    clipboard: Option<ClipboardHandle>,
     broadcast_tx: broadcast::Sender<VarlinkEvent>,
 }
 
@@ -51,9 +53,10 @@ impl KdeConnectVarlinkService {
         event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
         devices: Arc<tokio::sync::Mutex<std::collections::HashMap<String, DbusDevice>>>,
         sms_cache: Arc<tokio::sync::Mutex<Option<String>>>,
+        clipboard: Option<ClipboardHandle>,
         broadcast_tx: broadcast::Sender<VarlinkEvent>,
     ) -> Self {
-        Self { event_sender, devices, sms_cache, broadcast_tx }
+        Self { event_sender, devices, sms_cache, clipboard, broadcast_tx }
     }
 }
 
@@ -96,9 +99,46 @@ impl VarlinkInterface for KdeConnectVarlinkService {
     }
 
     async fn send_clipboard(&self, call: &mut dyn Call_SendClipboard, device_id: String, content: String) -> varlink::Result<()> {
-        let packet = ProtocolPacket::new(PacketType::Clipboard, json!({ "content": content }));
-        let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
-        call.reply()
+        match crate::dbus_interface::send_clipboard_packet(
+            &self.event_sender,
+            &self.devices,
+            device_id,
+            content,
+        )
+        .await
+        {
+            Ok(()) => call.reply(),
+            Err(error) => call.reply_service_error(error),
+        }
+    }
+
+    async fn share_clipboard(
+        &self,
+        call: &mut dyn Call_ShareClipboard,
+        device_id: String,
+    ) -> varlink::Result<()> {
+        let Some(clipboard) = self.clipboard.as_ref() else {
+            return call.reply_service_error(
+                "Background clipboard access is unavailable; ext-data-control-v1 is required"
+                    .to_string(),
+            );
+        };
+        let Some(content) = clipboard.current() else {
+            return call.reply_service_error(
+                "The current clipboard does not contain text".to_string(),
+            );
+        };
+        match crate::dbus_interface::send_clipboard_packet(
+            &self.event_sender,
+            &self.devices,
+            device_id,
+            content.text,
+        )
+        .await
+        {
+            Ok(()) => call.reply(),
+            Err(error) => call.reply_service_error(error),
+        }
     }
 
     async fn run_command(&self, call: &mut dyn Call_RunCommand, device_id: String, key: String) -> varlink::Result<()> {
@@ -276,9 +316,16 @@ pub async fn run_varlink_server(
     event_sender: Arc<mpsc::UnboundedSender<AppEvent>>,
     devices: Arc<tokio::sync::Mutex<std::collections::HashMap<String, DbusDevice>>>,
     sms_cache: Arc<tokio::sync::Mutex<Option<String>>>,
+    clipboard: Option<ClipboardHandle>,
     broadcast_tx: broadcast::Sender<VarlinkEvent>,
 ) -> Result<()> {
-    let service = Arc::new(KdeConnectVarlinkService::new(event_sender, devices, sms_cache, broadcast_tx));
+    let service = Arc::new(KdeConnectVarlinkService::new(
+        event_sender,
+        devices,
+        sms_cache,
+        clipboard,
+        broadcast_tx,
+    ));
     let handler = Arc::new(iface::new(service));
 
     listen_async(
