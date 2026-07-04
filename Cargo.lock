@@ -2907,6 +2907,7 @@ dependencies = [
  "varlink",
  "wayland-client",
  "wayland-protocols",
+ "wayland-protocols-wlr",
  "zbus",
 ]
 

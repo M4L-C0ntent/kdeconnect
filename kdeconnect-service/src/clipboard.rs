@@ -1,9 +1,11 @@
 //! Background Wayland clipboard access.
 //!
 //! A panel applet cannot reliably use `wl_data_device`: reads and writes are
-//! tied to keyboard focus and an input serial.  This worker uses the privileged
-//! `ext-data-control-v1` protocol on a separate connection instead, so clipboard
-//! synchronization is independent of popup focus and of the applet process.
+//! tied to keyboard focus and an input serial. This worker uses the privileged
+//! `ext-data-control-v1` protocol, or its older `wlr-data-control-v1` equivalent,
+//! on a separate connection instead. COSMIC hides both protocols from a
+//! Flatpak security-context socket, so the Flatpak manifest grants access to
+//! the host runtime directory and this worker opens the real Wayland socket.
 
 use anyhow::{Context, Result, anyhow};
 use calloop::{EventLoop, channel};
@@ -12,7 +14,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::File,
     io::{Read, Write},
-    os::fd::{AsFd, BorrowedFd},
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
     os::unix::net::UnixStream,
     path::PathBuf,
     sync::{Arc, RwLock},
@@ -31,6 +33,12 @@ use wayland_protocols::ext::data_control::v1::client::{
     ext_data_control_offer_v1::{self, ExtDataControlOfferV1},
     ext_data_control_source_v1::{self, ExtDataControlSourceV1},
 };
+use wayland_protocols_wlr::data_control::v1::client::{
+    zwlr_data_control_device_v1::{self, ZwlrDataControlDeviceV1},
+    zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
+    zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1},
+    zwlr_data_control_source_v1::{self, ZwlrDataControlSourceV1},
+};
 
 const TEXT_MIME_TYPES: &[&str] = &[
     "text/plain;charset=utf-8",
@@ -40,6 +48,109 @@ const TEXT_MIME_TYPES: &[&str] = &[
     "STRING",
 ];
 const MAX_CLIPBOARD_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Clone)]
+enum DataControlManager {
+    Ext(ExtDataControlManagerV1),
+    Wlr(ZwlrDataControlManagerV1),
+}
+
+impl DataControlManager {
+    fn protocol_name(&self) -> &'static str {
+        match self {
+            Self::Ext(_) => "ext-data-control-v1",
+            Self::Wlr(_) => "wlr-data-control-v1",
+        }
+    }
+
+    fn get_data_device(
+        &self,
+        seat: &wl_seat::WlSeat,
+        qh: &QueueHandle<WorkerState>,
+    ) -> DataControlDevice {
+        match self {
+            Self::Ext(manager) => DataControlDevice::Ext(manager.get_data_device(seat, qh, ())),
+            Self::Wlr(manager) => DataControlDevice::Wlr(manager.get_data_device(seat, qh, ())),
+        }
+    }
+
+    fn create_data_source(&self, qh: &QueueHandle<WorkerState>) -> DataControlSource {
+        match self {
+            Self::Ext(manager) => DataControlSource::Ext(manager.create_data_source(qh, ())),
+            Self::Wlr(manager) => DataControlSource::Wlr(manager.create_data_source(qh, ())),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum DataControlDevice {
+    Ext(ExtDataControlDeviceV1),
+    Wlr(ZwlrDataControlDeviceV1),
+}
+
+impl DataControlDevice {
+    fn set_selection(&self, source: &DataControlSource) {
+        match (self, source) {
+            (Self::Ext(device), DataControlSource::Ext(source)) => {
+                device.set_selection(Some(source));
+            }
+            (Self::Wlr(device), DataControlSource::Wlr(source)) => {
+                device.set_selection(Some(source));
+            }
+            _ => unreachable!("data-control manager created mismatched objects"),
+        }
+    }
+}
+
+enum DataControlSource {
+    Ext(ExtDataControlSourceV1),
+    Wlr(ZwlrDataControlSourceV1),
+}
+
+impl DataControlSource {
+    fn id(&self) -> ObjectId {
+        match self {
+            Self::Ext(source) => source.id(),
+            Self::Wlr(source) => source.id(),
+        }
+    }
+
+    fn offer(&self, mime_type: String) {
+        match self {
+            Self::Ext(source) => source.offer(mime_type),
+            Self::Wlr(source) => source.offer(mime_type),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum DataControlOffer {
+    Ext(ExtDataControlOfferV1),
+    Wlr(ZwlrDataControlOfferV1),
+}
+
+impl DataControlOffer {
+    fn id(&self) -> ObjectId {
+        match self {
+            Self::Ext(offer) => offer.id(),
+            Self::Wlr(offer) => offer.id(),
+        }
+    }
+
+    fn receive(&self, mime_type: String, fd: BorrowedFd<'_>) {
+        match self {
+            Self::Ext(offer) => offer.receive(mime_type, fd),
+            Self::Wlr(offer) => offer.receive(mime_type, fd),
+        }
+    }
+
+    fn destroy(self) {
+        match self {
+            Self::Ext(offer) => offer.destroy(),
+            Self::Wlr(offer) => offer.destroy(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClipboardContent {
@@ -95,12 +206,13 @@ struct OfferState {
 }
 
 struct WorkerState {
-    manager: Option<ExtDataControlManagerV1>,
+    manager: Option<DataControlManager>,
+    registry_initialized: bool,
     seats: HashMap<ObjectId, wl_seat::WlSeat>,
-    devices: HashMap<ObjectId, ExtDataControlDeviceV1>,
+    devices: HashMap<ObjectId, DataControlDevice>,
     offers: HashMap<ObjectId, OfferState>,
     sources: HashMap<ObjectId, String>,
-    selection_offer: Option<ExtDataControlOfferV1>,
+    selection_offer: Option<DataControlOffer>,
     selection_generation: u64,
     initialized_devices: HashSet<ObjectId>,
     pending_remote_write: Option<String>,
@@ -117,7 +229,7 @@ impl WorkerState {
 
         for (seat_id, seat) in &self.seats {
             if !self.devices.contains_key(seat_id) {
-                let device = manager.get_data_device(seat, qh, ());
+                let device = manager.get_data_device(seat, qh);
                 self.devices.insert(seat_id.clone(), device);
             }
         }
@@ -136,7 +248,7 @@ impl WorkerState {
 
     fn set_text(&mut self, text: String, qh: &QueueHandle<Self>) {
         let Some(manager) = self.manager.as_ref() else {
-            warn!("Cannot write clipboard: ext-data-control manager disappeared");
+            warn!("Cannot write clipboard: data-control manager disappeared");
             return;
         };
 
@@ -148,12 +260,12 @@ impl WorkerState {
         for device in self.devices.values() {
             // A data-control source may only be used in one set_selection
             // request, so every seat gets its own source.
-            let source = manager.create_data_source(qh, ());
+            let source = manager.create_data_source(qh);
             for mime_type in TEXT_MIME_TYPES {
                 source.offer((*mime_type).to_string());
             }
             self.sources.insert(source.id(), text.clone());
-            device.set_selection(Some(&source));
+            device.set_selection(&source);
         }
 
         self.pending_remote_write = Some(text.clone());
@@ -168,7 +280,7 @@ impl WorkerState {
 
     fn begin_selection_read(
         &mut self,
-        offer: Option<ExtDataControlOfferV1>,
+        offer: Option<DataControlOffer>,
         publish: bool,
         connection: &Connection,
     ) {
@@ -303,6 +415,38 @@ impl WorkerState {
             let _ = self.events.send(ClipboardEvent::Changed(content));
         }
     }
+
+    fn handle_selection(
+        &mut self,
+        device_id: ObjectId,
+        offer: Option<DataControlOffer>,
+        connection: &Connection,
+    ) {
+        // Every seat sends one initial selection snapshot. It seeds the cache
+        // but must not be mistaken for a user clipboard change.
+        let publish = !self.initialized_devices.insert(device_id);
+        self.begin_selection_read(offer, publish, connection);
+    }
+
+    fn handle_offer(&mut self, offer_id: ObjectId, mime_type: String) {
+        self.offers
+            .entry(offer_id)
+            .or_default()
+            .mime_types
+            .push(mime_type);
+    }
+
+    fn handle_source_send(&self, source_id: &ObjectId, fd: OwnedFd) {
+        let Some(text) = self.sources.get(source_id).cloned() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let mut file = File::from(fd);
+            if let Err(error) = file.write_all(text.as_bytes()) {
+                warn!("Failed to serve clipboard data: {error}");
+            }
+        });
+    }
 }
 
 fn now_millis() -> u64 {
@@ -333,8 +477,36 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WorkerState {
                 interface,
                 version,
             } if interface == ExtDataControlManagerV1::interface().name => {
-                state.manager = Some(registry.bind(name, version.min(1), qh, ()));
-                state.ensure_devices(qh);
+                // Prefer the standardized protocol when the compositor exposes
+                // both it and the deprecated wlr predecessor.
+                if !state.registry_initialized || state.manager.is_none() {
+                    state.manager = Some(DataControlManager::Ext(registry.bind(
+                        name,
+                        version.min(1),
+                        qh,
+                        (),
+                    )));
+                    if state.registry_initialized {
+                        state.ensure_devices(qh);
+                    }
+                }
+            }
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == ZwlrDataControlManagerV1::interface().name
+                && state.manager.is_none() =>
+            {
+                state.manager = Some(DataControlManager::Wlr(registry.bind(
+                    name,
+                    version.min(2),
+                    qh,
+                    (),
+                )));
+                if state.registry_initialized {
+                    state.ensure_devices(qh);
+                }
             }
             wl_registry::Event::Global {
                 name,
@@ -343,7 +515,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WorkerState {
             } if interface == wl_seat::WlSeat::interface().name => {
                 let seat: wl_seat::WlSeat = registry.bind(name, version.min(9), qh, ());
                 state.seats.insert(seat.id(), seat);
-                state.ensure_devices(qh);
+                if state.registry_initialized {
+                    state.ensure_devices(qh);
+                }
             }
             _ => {}
         }
@@ -352,6 +526,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WorkerState {
 
 delegate_noop!(WorkerState: ignore wl_seat::WlSeat);
 delegate_noop!(WorkerState: ignore ExtDataControlManagerV1);
+delegate_noop!(WorkerState: ignore ZwlrDataControlManagerV1);
 
 impl Dispatch<ExtDataControlDeviceV1, ()> for WorkerState {
     fn event(
@@ -364,10 +539,7 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for WorkerState {
     ) {
         match event {
             ext_data_control_device_v1::Event::Selection { id } => {
-                // Every seat sends one initial selection snapshot. It seeds the
-                // cache but must not be mistaken for a user clipboard change.
-                let publish = !state.initialized_devices.insert(device.id());
-                state.begin_selection_read(id, publish, connection);
+                state.handle_selection(device.id(), id.map(DataControlOffer::Ext), connection);
             }
             ext_data_control_device_v1::Event::Finished => {
                 warn!("Wayland compositor revoked clipboard data-control access");
@@ -390,6 +562,39 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for WorkerState {
     }
 }
 
+impl Dispatch<ZwlrDataControlDeviceV1, ()> for WorkerState {
+    fn event(
+        state: &mut Self,
+        device: &ZwlrDataControlDeviceV1,
+        event: zwlr_data_control_device_v1::Event,
+        _: &(),
+        connection: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_data_control_device_v1::Event::Selection { id } => {
+                state.handle_selection(device.id(), id.map(DataControlOffer::Wlr), connection);
+            }
+            zwlr_data_control_device_v1::Event::Finished => {
+                warn!("Wayland compositor revoked clipboard data-control access");
+            }
+            zwlr_data_control_device_v1::Event::DataOffer { .. }
+            | zwlr_data_control_device_v1::Event::PrimarySelection { .. } => {}
+            _ => {}
+        }
+    }
+
+    fn event_created_child(
+        opcode: u16,
+        qh: &QueueHandle<Self>,
+    ) -> Arc<dyn wayland_client::backend::ObjectData> {
+        match opcode {
+            0 => qh.make_data::<ZwlrDataControlOfferV1, _>(()),
+            _ => unreachable!("unknown zwlr_data_control_device_v1 child opcode"),
+        }
+    }
+}
+
 impl Dispatch<ExtDataControlOfferV1, ()> for WorkerState {
     fn event(
         state: &mut Self,
@@ -400,12 +605,22 @@ impl Dispatch<ExtDataControlOfferV1, ()> for WorkerState {
         _: &QueueHandle<Self>,
     ) {
         if let ext_data_control_offer_v1::Event::Offer { mime_type } = event {
-            state
-                .offers
-                .entry(offer.id())
-                .or_default()
-                .mime_types
-                .push(mime_type);
+            state.handle_offer(offer.id(), mime_type);
+        }
+    }
+}
+
+impl Dispatch<ZwlrDataControlOfferV1, ()> for WorkerState {
+    fn event(
+        state: &mut Self,
+        offer: &ZwlrDataControlOfferV1,
+        event: zwlr_data_control_offer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zwlr_data_control_offer_v1::Event::Offer { mime_type } = event {
+            state.handle_offer(offer.id(), mime_type);
         }
     }
 }
@@ -421,17 +636,31 @@ impl Dispatch<ExtDataControlSourceV1, ()> for WorkerState {
     ) {
         match event {
             ext_data_control_source_v1::Event::Send { fd, .. } => {
-                let Some(text) = state.sources.get(&source.id()).cloned() else {
-                    return;
-                };
-                std::thread::spawn(move || {
-                    let mut file = File::from(fd);
-                    if let Err(error) = file.write_all(text.as_bytes()) {
-                        warn!("Failed to serve clipboard data: {error}");
-                    }
-                });
+                state.handle_source_send(&source.id(), fd);
             }
             ext_data_control_source_v1::Event::Cancelled => {
+                state.sources.remove(&source.id());
+                source.destroy();
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ZwlrDataControlSourceV1, ()> for WorkerState {
+    fn event(
+        state: &mut Self,
+        source: &ZwlrDataControlSourceV1,
+        event: zwlr_data_control_source_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            zwlr_data_control_source_v1::Event::Send { fd, .. } => {
+                state.handle_source_send(&source.id(), fd);
+            }
+            zwlr_data_control_source_v1::Event::Cancelled => {
                 state.sources.remove(&source.id());
                 source.destroy();
             }
@@ -453,6 +682,7 @@ pub fn start() -> Result<(ClipboardHandle, mpsc::UnboundedReceiver<ClipboardEven
     let current = Arc::new(RwLock::new(None));
     let mut state = WorkerState {
         manager: None,
+        registry_initialized: false,
         seats: HashMap::new(),
         devices: HashMap::new(),
         offers: HashMap::new(),
@@ -469,18 +699,28 @@ pub fn start() -> Result<(ClipboardHandle, mpsc::UnboundedReceiver<ClipboardEven
     event_queue
         .roundtrip(&mut state)
         .context("failed to enumerate Wayland clipboard globals")?;
+
+    if state.manager.is_none() {
+        return Err(anyhow!(
+            "the compositor advertises neither ext-data-control-v1 nor wlr-data-control-v1"
+        ));
+    }
+    state.registry_initialized = true;
+    state.ensure_devices(&qh);
+
     event_queue
         .roundtrip(&mut state)
         .context("failed to initialize Wayland data-control device")?;
 
-    if state.manager.is_none() {
-        return Err(anyhow!(
-            "the compositor does not advertise ext-data-control-v1"
-        ));
-    }
     if state.devices.is_empty() {
         return Err(anyhow!("the compositor did not advertise a Wayland seat"));
     }
+
+    let protocol_name = state
+        .manager
+        .as_ref()
+        .map(DataControlManager::protocol_name)
+        .expect("data-control manager checked above");
 
     let handle = ClipboardHandle {
         commands: command_sender,
@@ -514,7 +754,7 @@ pub fn start() -> Result<(ClipboardHandle, mpsc::UnboundedReceiver<ClipboardEven
                 return;
             }
 
-            info!("Wayland ext-data-control clipboard worker started");
+            info!("Wayland {protocol_name} clipboard worker started");
             if let Err(error) = event_loop.run(None, &mut state, |_| {}) {
                 warn!("Clipboard worker stopped: {error}");
             }
@@ -613,9 +853,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires a running Wayland compositor with ext-data-control-v1"]
+    #[ignore = "requires a running Wayland compositor with a data-control protocol"]
     fn data_control_smoke() {
-        let (_handle, _events) =
-            super::start().expect("the current Wayland session must provide ext-data-control-v1");
+        let (_handle, _events) = super::start()
+            .expect("the current Wayland session must provide ext- or wlr-data-control-v1");
     }
 }

@@ -51,6 +51,7 @@ calloop = "0.14.4"
 calloop-wayland-source = "0.4.1"
 wayland-client = "0.31.14"
 wayland-protocols = { version = "0.32.12", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3.9", features = ["client"] }
 
 kdeconnect-core = { path = "kdeconnect-core" }
 kdeconnect-dbus-client = { path = "kdeconnect-dbus-client" }
