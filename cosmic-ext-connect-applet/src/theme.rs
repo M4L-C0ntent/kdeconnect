@@ -150,19 +150,44 @@ pub fn accent_filled_button(accent: cosmic::iced::Color) -> cosmic::theme::Butto
 }
 
 /// Loads a named symbolic icon and recolors its fill to the given accent.
+///
+/// The lookup (XDG icon-theme search + file read + SVG recolor) is done once
+/// per (name, accent) and cached: `view` rebuilds the whole popup on every
+/// redraw, and a single device card asks for half a dozen icons, so doing
+/// filesystem work here made hovering the popup visibly sluggish.
 pub fn accent_icon(name: &str, accent: cosmic::iced::Color) -> cosmic::widget::icon::Handle {
-    let hex = format!(
-        "#{:02x}{:02x}{:02x}",
-        (accent.r * 255.0).round() as u8,
-        (accent.g * 255.0).round() as u8,
-        (accent.b * 255.0).round() as u8,
-    );
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
 
-    cosmic::widget::icon::from_name(name)
+    // Accent quantized to 8-bit channels — f32 Color is not Eq/Hash, and the
+    // recolored SVG can't be more precise than the hex string anyway.
+    type Key = (String, [u8; 4]);
+    static CACHE: OnceLock<Mutex<HashMap<Key, cosmic::widget::icon::Handle>>> = OnceLock::new();
+
+    let quantize = |c: f32| (c * 255.0).round() as u8;
+    let rgba = [
+        quantize(accent.r),
+        quantize(accent.g),
+        quantize(accent.b),
+        quantize(accent.a),
+    ];
+    let key = (name.to_string(), rgba);
+
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(handle) = cache.lock().unwrap().get(&key) {
+        return handle.clone();
+    }
+
+    let hex = format!("#{:02x}{:02x}{:02x}", rgba[0], rgba[1], rgba[2]);
+
+    let handle = cosmic::widget::icon::from_name(name)
         .path()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .map(|svg| {
             cosmic::widget::icon::from_svg_bytes(svg.replace("#232323", &hex).into_bytes())
         })
-        .unwrap_or_else(|| cosmic::widget::icon::from_name(name).handle())
+        .unwrap_or_else(|| cosmic::widget::icon::from_name(name).handle());
+
+    cache.lock().unwrap().insert(key, handle.clone());
+    handle
 }
