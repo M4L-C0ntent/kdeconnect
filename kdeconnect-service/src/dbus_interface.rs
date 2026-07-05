@@ -330,7 +330,7 @@ impl DaemonInterface {
     async fn share_clipboard(&self, device_id: String) -> zbus::fdo::Result<()> {
         let clipboard = self.clipboard.as_ref().ok_or_else(|| {
             zbus::fdo::Error::Failed(
-                "Background clipboard access is unavailable; COSMIC must expose ext- or wlr-data-control-v1 (Flatpak builds require host /run/user access)"
+                "Background clipboard access is unavailable; COSMIC must expose ext- or wlr-data-control-v1 (Flatpak builds require host WAYLAND_DISPLAY/XDG_RUNTIME_DIR access)"
                     .to_string(),
             )
         })?;
