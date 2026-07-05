@@ -1,9 +1,32 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
+use once_cell::sync::Lazy;
 use serde::Deserialize;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
-use tracing::info;
+use tracing::{info, warn};
+
+/// How long a single sshfs mount attempt may take end-to-end. sshfs itself
+/// gives up connecting after `ConnectTimeout`; this is the backstop for a
+/// hang anywhere else (DNS, auth exchange, FUSE setup).
+const MOUNT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a health probe (`stat` on the mount point) may take before the
+/// mount is declared stale. A live LAN sshfs answers in milliseconds; a dead
+/// one blocks until its own timeouts fire, which is exactly what we can't
+/// afford on the browse-click path.
+const HEALTH_TIMEOUT_SECS: &str = "5";
+
+/// device_id → actual mount point of a mount this process created or
+/// adopted. Purely a cache: the source of truth is the host's mount table,
+/// which every user-facing query re-checks (the user can unmount from the
+/// file manager at any time, behind our back — that's the point).
+static MOUNTS: Lazy<StdMutex<HashMap<String, PathBuf>>> =
+    Lazy::new(|| StdMutex::new(HashMap::new()));
 
 /// `kdeconnect.sftp` — login info the phone sends in response to a
 /// `kdeconnect.sftp.request { startBrowsing: true }`.
@@ -28,18 +51,44 @@ impl SftpInfo {
     /// mount namespace and is invisible to the host, so mounting/opening
     /// has to happen as real host processes via `flatpak-spawn --host`.
     /// Outside a sandbox this is just a plain `Command::new`.
-    pub async fn browse(&self, device_id: &str) -> anyhow::Result<()> {
+    ///
+    /// The mount point lives under `$HOME/KDE Connect/<device name>`, not
+    /// XDG_RUNTIME_DIR: GIO's mount-display heuristic hides mounts whose
+    /// path is under `/run` or contains a dot-directory, but shows mounts
+    /// under the home directory — which is what puts the device in the file
+    /// manager sidebar with its own unmount/eject button.
+    pub async fn browse(&self, device_id: &str, device_name: &str) -> anyhow::Result<PathBuf> {
         preflight().await?;
 
-        let mount_point = mount_point(device_id);
+        let mount_point = mount_point_for(device_id, device_name);
         let mount_point_str = mount_point.to_string_lossy().into_owned();
 
-        run(host_command("mkdir").args(["-p", &mount_point_str])).await?;
+        let mounts = host_mount_points().await;
 
-        if is_mounted(&mount_point_str).await {
-            info!("[sftp] {} already mounted", mount_point_str);
-            return open(&mount_point_str).await;
+        // A previous version mounted under XDG_RUNTIME_DIR; if such a mount
+        // is still around from before an upgrade, retire it rather than
+        // leaving two mounts of the same phone.
+        let legacy = legacy_mount_point(device_id);
+        let legacy_str = legacy.to_string_lossy().into_owned();
+        if mounts.iter().any(|m| m == &legacy_str) {
+            info!("[sftp] unmounting legacy mount at {}", legacy_str);
+            let _ = force_unmount(&legacy_str).await;
         }
+
+        if mounts.iter().any(|m| m == &mount_point_str) {
+            if is_healthy(&mount_point_str).await {
+                info!("[sftp] {} already mounted", mount_point_str);
+                register_mount(device_id, &mount_point);
+                open(&mount_point_str).await?;
+                return Ok(mount_point);
+            }
+            // Stale mount ("Transport endpoint is not connected" after the
+            // phone dropped off wifi, etc.) — force it out and remount.
+            warn!("[sftp] {} is mounted but unresponsive, remounting", mount_point_str);
+            force_unmount(&mount_point_str).await?;
+        }
+
+        run(host_command("mkdir").args(["-p", &mount_point_str])).await?;
 
         let path = self
             .multi_paths
@@ -53,6 +102,13 @@ impl SftpInfo {
             "[sftp] mounting {}@{}:{} -> {}",
             self.user, self.ip, self.port, mount_point_str
         );
+
+        // A recognisable fsname so the mount is identifiable in the mount
+        // table; strip anything that could break `-o` comma parsing.
+        let fsname: String = device_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
 
         let mut child = host_command("sshfs")
             .arg(format!("{}@{}:{}", self.user, self.ip, path))
@@ -69,6 +125,29 @@ impl SftpInfo {
                 "UserKnownHostsFile=/dev/null",
                 "-o",
                 "password_stdin",
+                // Fail fast instead of hanging the browse click when the
+                // phone is unreachable.
+                "-o",
+                "ConnectTimeout=10",
+                // Detect a dead peer within ~45s instead of leaving the
+                // mount wedged indefinitely, and transparently re-establish
+                // the session when the phone comes back (sshfs keeps the
+                // stdin-supplied password in memory for reconnects).
+                "-o",
+                "reconnect",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
+                // Cache file data between opens as long as the file is
+                // unchanged — repeated browsing/thumbnailing over the phone
+                // link is the slow path worth caching.
+                "-o",
+                "auto_cache",
+                "-o",
+                "follow_symlinks",
+                "-o",
+                &format!("fsname=kdeconnect-{}", fsname),
             ])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
@@ -81,14 +160,127 @@ impl SftpInfo {
                 .await?;
         }
 
-        let output = child.wait_with_output().await?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("sshfs failed: {}", stderr.trim());
+        // Drain stderr concurrently so a chatty sshfs can't fill the pipe
+        // and deadlock against our wait() below.
+        let stderr_pipe = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut stderr) = stderr_pipe {
+                let _ = stderr.read_to_end(&mut buf).await;
+            }
+            buf
+        });
+
+        // sshfs daemonizes once the mount is live, so a successful wait()
+        // returns quickly; the timeout only fires when something wedged.
+        let status = match tokio::time::timeout(MOUNT_TIMEOUT, child.wait()).await {
+            Ok(res) => res?,
+            Err(_) => {
+                let _ = child.kill().await;
+                cleanup_mount_dir(&mount_point_str).await;
+                anyhow::bail!(
+                    "sshfs did not finish mounting within {}s",
+                    MOUNT_TIMEOUT.as_secs()
+                );
+            }
+        };
+
+        if !status.success() {
+            let stderr = stderr_task.await.unwrap_or_default();
+            cleanup_mount_dir(&mount_point_str).await;
+            anyhow::bail!(
+                "sshfs failed: {}",
+                String::from_utf8_lossy(&stderr).trim()
+            );
         }
 
-        open(&mount_point_str).await
+        register_mount(device_id, &mount_point);
+        open(&mount_point_str).await?;
+        Ok(mount_point)
     }
+}
+
+/// If the device's share is already mounted and responsive, open it in the
+/// file manager and return true — the caller can then skip the whole
+/// phone round-trip (sftp.request → sftp packet → mount).
+pub async fn open_mounted(device_id: &str, device_name: &str) -> bool {
+    let mount_point = mount_point_for(device_id, device_name);
+    let mount_point_str = mount_point.to_string_lossy().into_owned();
+
+    if !host_mount_points().await.iter().any(|m| m == &mount_point_str) {
+        return false;
+    }
+    if !is_healthy(&mount_point_str).await {
+        return false;
+    }
+    register_mount(device_id, &mount_point);
+    open(&mount_point_str).await.is_ok()
+}
+
+/// Unmount a device's share. Returns Ok(true) if a live mount was actually
+/// unmounted, Ok(false) if there was nothing mounted.
+pub async fn unmount(device_id: &str, device_name: &str) -> anyhow::Result<bool> {
+    let mount_point = mount_point_for(device_id, device_name);
+    let mount_point_str = mount_point.to_string_lossy().into_owned();
+
+    let mounts = host_mount_points().await;
+
+    // Also retire a pre-upgrade legacy mount if one is lying around.
+    let legacy = legacy_mount_point(device_id);
+    let legacy_str = legacy.to_string_lossy().into_owned();
+    let mut unmounted = false;
+    if mounts.iter().any(|m| m == &legacy_str) {
+        force_unmount(&legacy_str).await?;
+        unmounted = true;
+    }
+
+    if mounts.iter().any(|m| m == &mount_point_str) {
+        force_unmount(&mount_point_str).await?;
+        unmounted = true;
+    }
+
+    unregister_mount(device_id);
+    cleanup_mount_dir(&mount_point_str).await;
+    Ok(unmounted)
+}
+
+/// Unmount every share this process knows about — called on service
+/// shutdown, after which the mounts would only go stale.
+pub async fn unmount_all() {
+    let entries: Vec<(String, PathBuf)> = {
+        let guard = MOUNTS.lock().unwrap();
+        guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    };
+    if entries.is_empty() {
+        return;
+    }
+    let mounts = host_mount_points().await;
+    for (device_id, mount_point) in entries {
+        let mount_point_str = mount_point.to_string_lossy().into_owned();
+        if mounts.iter().any(|m| m == &mount_point_str) {
+            info!("[sftp] unmounting {} on shutdown", mount_point_str);
+            let _ = force_unmount(&mount_point_str).await;
+        }
+        unregister_mount(&device_id);
+        cleanup_mount_dir(&mount_point_str).await;
+    }
+}
+
+/// Which of the given (device_id, device_name) pairs currently have a live
+/// mount, checked against the host mount table in a single read.
+pub async fn mounted_devices(devices: &[(String, String)]) -> Vec<String> {
+    if devices.is_empty() {
+        return Vec::new();
+    }
+    let mounts = host_mount_points().await;
+    devices
+        .iter()
+        .filter(|(id, name)| {
+            let mp = mount_point_for(id, name).to_string_lossy().into_owned();
+            mounts.iter().any(|m| m == &mp)
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 /// Specific, actionable reasons `browse()` can't proceed — surfaced to the
@@ -121,7 +313,17 @@ impl std::fmt::Display for BrowsePreflightError {
 
 impl std::error::Error for BrowsePreflightError {}
 
+/// One-way latch: once the environment checks pass they can't un-pass
+/// within this process's lifetime, so don't re-spawn two host processes on
+/// every browse click. Failures are NOT cached — the user may install sshfs
+/// and retry immediately.
+static PREFLIGHT_PASSED: AtomicBool = AtomicBool::new(false);
+
 async fn preflight() -> Result<(), BrowsePreflightError> {
+    if PREFLIGHT_PASSED.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
     if in_flatpak() {
         let reachable = Command::new("flatpak-spawn")
             .args(["--host", "true"])
@@ -144,6 +346,7 @@ async fn preflight() -> Result<(), BrowsePreflightError> {
         return Err(BrowsePreflightError::SshfsMissing);
     }
 
+    PREFLIGHT_PASSED.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -166,22 +369,165 @@ fn host_command(program: &str) -> Command {
     }
 }
 
-fn mount_point(device_id: &str) -> PathBuf {
+fn mounts_base_dir() -> PathBuf {
+    // Deliberately a *visible* directory in $HOME: GIO hides mounts whose
+    // path contains a dot-component, and showing up in the file manager
+    // sidebar (with an eject button) is the whole point of this location.
+    // The directory only exists while something is mounted — unmount
+    // removes it again.
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("KDE Connect")
+}
+
+fn legacy_mount_point(device_id: &str) -> PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(runtime_dir).join("kdeconnect-sftp").join(device_id)
+}
+
+/// The directory basename doubles as the label the file manager shows for
+/// the mount, so it's the device's human name — sanitized, since it comes
+/// from the network.
+fn sanitize_name(device_id: &str, device_name: &str) -> String {
+    let cleaned: String = device_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if cleaned.is_empty() {
+        format!("device-{}", &device_id[..device_id.len().min(8)])
+    } else {
+        cleaned
+    }
+}
+
+fn mount_point_for(device_id: &str, device_name: &str) -> PathBuf {
+    let guard = MOUNTS.lock().unwrap();
+    if let Some(existing) = guard.get(device_id) {
+        return existing.clone();
+    }
+    let mut candidate = mounts_base_dir().join(sanitize_name(device_id, device_name));
+    // Two devices with the same human name must not fight over one mount
+    // point; disambiguate the second with a device-id suffix.
+    let taken_by_other = guard
+        .iter()
+        .any(|(id, path)| id != device_id && *path == candidate);
+    if taken_by_other {
+        let suffix: String = device_id.chars().take(6).collect();
+        candidate = mounts_base_dir().join(format!(
+            "{} ({})",
+            sanitize_name(device_id, device_name),
+            suffix
+        ));
+    }
+    candidate
+}
+
+fn register_mount(device_id: &str, mount_point: &Path) {
+    MOUNTS
+        .lock()
+        .unwrap()
+        .insert(device_id.to_string(), mount_point.to_path_buf());
+}
+
+fn unregister_mount(device_id: &str) {
+    MOUNTS.lock().unwrap().remove(device_id);
 }
 
 /// Reads the host's `/proc/mounts` (via `host_command`, so this is the
 /// host's mount table even when sandboxed) rather than depending on the
 /// `mountpoint` binary just to answer a question the kernel already tracks.
-async fn is_mounted(target: &str) -> bool {
+/// Returns unescaped mount-point paths — the kernel octal-escapes spaces
+/// (`\040`) etc., and our mount points contain device names.
+async fn host_mount_points() -> Vec<String> {
     let output = match host_command("cat").arg("/proc/mounts").output().await {
         Ok(o) if o.status.success() => o,
-        _ => return false,
+        _ => return Vec::new(),
     };
     String::from_utf8_lossy(&output.stdout)
         .lines()
-        .any(|l| l.split_whitespace().nth(1) == Some(target))
+        .filter_map(|l| l.split_whitespace().nth(1).map(unescape_mount_path))
+        .collect()
+}
+
+/// Undo the octal escaping /proc/mounts applies to whitespace and
+/// backslashes in paths (`\040` space, `\011` tab, `\012` newline,
+/// `\134` backslash).
+fn unescape_mount_path(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 4 <= bytes.len()
+            && let Ok(oct) = u8::from_str_radix(&s[i + 1..i + 4], 8)
+        {
+            out.push(oct as char);
+            i += 4;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// A mount can be present in the mount table yet dead ("Transport endpoint
+/// is not connected"). Probe it with a time-boxed stat so the answer comes
+/// back fast either way.
+async fn is_healthy(mount_point: &str) -> bool {
+    host_command("timeout")
+        .args([HEALTH_TIMEOUT_SECS, "stat", "--", mount_point])
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Unmount via fusermount (the unprivileged FUSE path), falling back to a
+/// lazy unmount if the mount point is busy — e.g. a file manager still has
+/// it open, which is exactly the situation after auto-unmount-on-disconnect.
+async fn force_unmount(mount_point: &str) -> anyhow::Result<()> {
+    const SCRIPT: &str = r#"
+if command -v fusermount3 >/dev/null 2>&1; then FM=fusermount3; else FM=fusermount; fi
+"$FM" -u -- "$1" 2>/dev/null || "$FM" -u -z -- "$1"
+"#;
+    let output = host_command("sh")
+        .args(["-c", SCRIPT, "sh", mount_point])
+        .output()
+        .await?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "unmount of {} failed: {}",
+            mount_point,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Remove the (now empty) mount directory, and the shared base directory if
+/// this was the last mount. `rmdir` only — never delete contents.
+async fn cleanup_mount_dir(mount_point: &str) {
+    let base = mounts_base_dir().to_string_lossy().into_owned();
+    let _ = host_command("sh")
+        .args([
+            "-c",
+            r#"rmdir -- "$1" 2>/dev/null; rmdir -- "$2" 2>/dev/null; true"#,
+            "sh",
+            mount_point,
+            &base,
+        ])
+        .status()
+        .await;
 }
 
 async fn run(cmd: &mut Command) -> anyhow::Result<()> {
@@ -195,4 +541,43 @@ async fn run(cmd: &mut Command) -> anyhow::Result<()> {
 async fn open(mount_point: &str) -> anyhow::Result<()> {
     host_command("xdg-open").arg(mount_point).spawn()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unescape_space() {
+        assert_eq!(
+            unescape_mount_path("/home/user/KDE\\040Connect/Pixel\\0407"),
+            "/home/user/KDE Connect/Pixel 7"
+        );
+    }
+
+    #[test]
+    fn unescape_plain() {
+        assert_eq!(unescape_mount_path("/run/user/1000/doc"), "/run/user/1000/doc");
+    }
+
+    #[test]
+    fn unescape_backslash() {
+        assert_eq!(unescape_mount_path("a\\134b"), "a\\b");
+    }
+
+    #[test]
+    fn sanitize_keeps_normal_names() {
+        assert_eq!(sanitize_name("id", "Pixel 7 Pro"), "Pixel 7 Pro");
+    }
+
+    #[test]
+    fn sanitize_replaces_path_chars() {
+        assert_eq!(sanitize_name("id", "evil/../name"), "evil-..-name");
+    }
+
+    #[test]
+    fn sanitize_empty_falls_back_to_id() {
+        assert_eq!(sanitize_name("abcdef1234", "///"), "---");
+        assert_eq!(sanitize_name("abcdef1234", ""), "device-abcdef12");
+    }
 }

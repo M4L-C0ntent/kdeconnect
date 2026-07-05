@@ -24,6 +24,9 @@ pub struct Device {
     #[allow(dead_code)]
     pub has_remote_keyboard: bool,
     pub has_sftp: bool,
+    /// True while the device's SFTP share is mounted locally — switches the
+    /// quick-actions menu to offer Unmount alongside Browse.
+    pub is_mounted: bool,
     #[allow(dead_code)]
     pub has_presenter: bool,
     pub has_lockdevice: bool,

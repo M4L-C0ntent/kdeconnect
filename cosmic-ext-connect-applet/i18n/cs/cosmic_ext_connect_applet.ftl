@@ -26,6 +26,7 @@ quick-actions-sms = SMS zprávy
 quick-actions-files-header = Soubory
 quick-actions-send-file = Odeslat soubor
 quick-actions-browse-device = Procházet zařízení
+quick-actions-unmount-device = Odpojit zařízení
 quick-actions-run-commands-header = Spustit příkazy
 
 # Run Command management (settings)

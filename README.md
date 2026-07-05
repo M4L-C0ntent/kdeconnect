@@ -27,7 +27,7 @@
 - Plugin Enable / Disable per device
 - System Volume (Partial support - May not work on certain devices - Known Mobile App Bug)
 - Telephony (Know bug - Media does not resume when Ending/Canceling Call)
-- SFTP / Browse Device (Requires sshfs package installed)
+- SFTP / Browse Device (Requires sshfs package installed; mounts under `~/KDE Connect/<device>` so the file manager shows it with an unmount button, auto-unmounts on disconnect)
 
 </details>
 

@@ -26,6 +26,7 @@ quick-actions-sms = SMS Messages
 quick-actions-files-header = Files
 quick-actions-send-file = Send file
 quick-actions-browse-device = Browse device
+quick-actions-unmount-device = Unmount device
 quick-actions-run-commands-header = Run Commands
 
 # Run Command management (settings)

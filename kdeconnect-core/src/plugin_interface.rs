@@ -380,12 +380,22 @@ impl PluginRegistry {
             PacketType::Sftp => {
                 if let Ok(info) = serde_json::from_value::<SftpInfo>(body) {
                     let device_id = device.device_id.clone();
+                    let device_name = device.name.clone();
                     let connection_tx = connection_tx.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = info.browse(&device_id.0).await {
-                            warn!("[sftp] browse failed: {}", e);
-                            let _ = connection_tx
-                                .send(ConnectionEvent::SftpBrowseFailed((device_id, e.to_string())));
+                        match info.browse(&device_id.0, &device_name).await {
+                            Ok(_) => {
+                                let _ = connection_tx.send(
+                                    ConnectionEvent::SftpMountStateChanged((device_id, true)),
+                                );
+                            }
+                            Err(e) => {
+                                warn!("[sftp] browse failed: {}", e);
+                                let _ = connection_tx.send(ConnectionEvent::SftpBrowseFailed((
+                                    device_id,
+                                    e.to_string(),
+                                )));
+                            }
                         }
                     });
                 } else {

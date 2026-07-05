@@ -221,6 +221,16 @@ impl cosmic::Application for KdeConnectApplet {
                     },
                 );
             }
+            Message::UnmountDevice(ref device_id) => {
+                let id = device_id.clone();
+                return Task::perform(
+                    async move { backend::unmount_device(id).await },
+                    |result| match result {
+                        Ok(()) => cosmic::Action::App(Message::RefreshDevices),
+                        Err(e) => cosmic::Action::App(Message::BrowseDeviceFailed(e.to_string())),
+                    },
+                );
+            }
             Message::BrowseDeviceFailed(message) => {
                 self.error_banner = Some(message);
                 return Task::none();
@@ -490,6 +500,12 @@ impl cosmic::Application for KdeConnectApplet {
                             }
                             kdeconnect_dbus_client::ServiceEvent::BrowseFailed(_id, message) => {
                                 yield Message::BrowseDeviceFailed(message);
+                            }
+                            // Mount finished (or the share was unmounted,
+                            // possibly straight from the file manager) —
+                            // refetch so the Browse/Unmount buttons match.
+                            kdeconnect_dbus_client::ServiceEvent::MountStateChanged(_, _) => {
+                                yield Message::RefreshDevices;
                             }
                             kdeconnect_dbus_client::ServiceEvent::DeviceConnected(id, _)
                             | kdeconnect_dbus_client::ServiceEvent::DevicePaired(id, _)

@@ -90,6 +90,9 @@ pub enum ConnectionEvent {
     /// SFTP browse (mount/preflight) failed for a device. Payload is
     /// (device_id, user-facing message).
     SftpBrowseFailed((DeviceId, String)),
+    /// SFTP mount state changed: true right after a successful mount,
+    /// false after an unmount (manual or automatic on disconnect).
+    SftpMountStateChanged((DeviceId, bool)),
     /// A full-resolution MMS attachment finished downloading to local
     /// cache. Payload is (device_id, filename/unique_identifier, saved
     /// path) — filename doubles as the correlation key since upstream
