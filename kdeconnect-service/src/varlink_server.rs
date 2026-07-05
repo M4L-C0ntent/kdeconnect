@@ -119,7 +119,7 @@ impl VarlinkInterface for KdeConnectVarlinkService {
     ) -> varlink::Result<()> {
         let Some(clipboard) = self.clipboard.as_ref() else {
             return call.reply_service_error(
-                "Background clipboard access is unavailable; COSMIC must expose ext- or wlr-data-control-v1 (Flatpak builds require host /run/user access)"
+                "Background clipboard access is unavailable; COSMIC must expose ext- or wlr-data-control-v1 (Flatpak builds require host WAYLAND_DISPLAY/XDG_RUNTIME_DIR access)"
                     .to_string(),
             );
         };
