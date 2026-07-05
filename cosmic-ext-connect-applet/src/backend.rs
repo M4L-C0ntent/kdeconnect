@@ -209,17 +209,17 @@ pub async fn send_files(device_id: String, files: Vec<String>) -> Result<()> {
     dbus_client!(g).send_files(&device_id, files).await
 }
 
-pub async fn send_clipboard(device_id: String, content: String) -> Result<()> {
+/// Ask the service to read its background clipboard cache and send it.
+pub async fn share_clipboard(device_id: String) -> Result<()> {
     if let Some(r) = via_varlink(|c| {
         let id = device_id.clone();
-        let ct = content.clone();
         async move {
             use kdeconnect_varlink::iface::VarlinkClientInterface;
-            c.send_clipboard(id, ct).call().await.map(|_| ())
+            c.share_clipboard(id).call().await.map(|_| ())
         }
     }).await { return r; }
     let g = CLIENT.lock().await;
-    dbus_client!(g).send_clipboard(&device_id, &content).await
+    dbus_client!(g).share_clipboard(&device_id).await
 }
 
 pub async fn browse_device_filesystem(device_id: String) -> Result<()> {

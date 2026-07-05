@@ -32,9 +32,6 @@ pub struct KdeConnectApplet {
     /// Media section state, keyed by MPRIS D-Bus bus name. Refreshed by
     /// `backend::mpris_subscription`.
     now_playing: HashMap<String, NowPlaying>,
-    /// Last desktop clipboard content seen by the auto-sync poller, used to
-    /// detect changes without re-sending unchanged content every tick.
-    last_clipboard: Option<String>,
 }
 
 impl KdeConnectApplet {
@@ -93,7 +90,6 @@ impl cosmic::Application for KdeConnectApplet {
             unread_sms: HashMap::new(),
             error_banner: None,
             now_playing: HashMap::new(),
-            last_clipboard: None,
         };
 
         (app, Task::none())
@@ -262,80 +258,21 @@ impl cosmic::Application for KdeConnectApplet {
             }
             Message::ShareClipboard(ref device_id) => {
                 let id = device_id.clone();
-                return cosmic::iced::clipboard::read().map(move |content| {
-                    cosmic::Action::App(Message::ClipboardReadForDevice(
-                        id.clone(),
-                        content.unwrap_or_default(),
-                    ))
-                });
-            }
-            Message::ClipboardReadForDevice(device_id, content) => {
-                if !content.is_empty() {
-                    return Task::perform(
-                        async move { backend::send_clipboard(device_id, content).await.ok(); },
-                        |_| cosmic::Action::App(Message::RefreshDevices),
-                    );
-                }
-            }
-            Message::ClipboardReceived(content) => {
-                return cosmic::iced::clipboard::write::<cosmic::Action<Message>>(content);
-            }
-            Message::PollClipboard => {
-                let last = self.last_clipboard.clone();
+                let result_device_id = id.clone();
                 return Task::perform(
-                    async move {
-                        // wl-clipboard-rs does a blocking Wayland round-trip.
-                        tokio::task::spawn_blocking(move || {
-                            use wl_clipboard_rs::paste::{ClipboardType, Error, MimeType, Seat, get_contents};
-                            match get_contents(ClipboardType::Regular, Seat::Unspecified, MimeType::Text) {
-                                Ok((mut pipe, _)) => {
-                                    let mut buf = String::new();
-                                    std::io::Read::read_to_string(&mut pipe, &mut buf).ok()?;
-                                    (!buf.is_empty() && Some(&buf) != last.as_ref()).then_some(buf)
-                                }
-                                // No selection yet, or compositor doesn't expose data-control — not an error worth logging every 2s.
-                                Err(Error::NoSeats) | Err(Error::ClipboardEmpty) | Err(Error::NoMimeType) => None,
-                                Err(e) => {
-                                    warn!("clipboard poll failed: {e}");
-                                    None
-                                }
-                            }
+                    async move { backend::share_clipboard(id).await.map_err(|e| e.to_string()) },
+                    move |result| {
+                        cosmic::Action::App(Message::ClipboardSendFinished {
+                            device_id: result_device_id.clone(),
+                            result,
                         })
-                        .await
-                        .ok()
-                        .flatten()
-                    },
-                    |content| match content {
-                        Some(c) => cosmic::Action::App(Message::ClipboardChanged(c)),
-                        None => cosmic::Action::App(Message::Noop),
                     },
                 );
             }
-            Message::ClipboardChanged(content) => {
-                self.last_clipboard = Some(content.clone());
-                let targets: Vec<String> = self
-                    .devices
-                    .values()
-                    .filter(|d| d.is_paired && d.is_reachable && d.has_clipboard)
-                    .map(|d| d.id.clone())
-                    .collect();
-                info!(
-                    "clipboard changed ({} bytes), auto-sending to {} device(s)",
-                    content.len(),
-                    targets.len()
-                );
-                let content = content.clone();
-                return Task::perform(
-                    async move {
-                        for id in targets {
-                            if !backend::get_disabled_plugins(id.clone()).await.iter().any(|p| p == "clipboard") {
-                                backend::send_clipboard(id, content.clone()).await.ok();
-                            }
-                        }
-                    },
-                    |_| cosmic::Action::App(Message::RefreshDevices),
-                );
-            }
+            Message::ClipboardSendFinished { device_id, result } => match result {
+                Ok(()) => debug!("Manual clipboard sent to {}", device_id),
+                Err(e) => warn!("Manual clipboard send to {} failed: {}", device_id, e),
+            },
             Message::BatteryUpdated(device_id, level, charging) => {
                 if let Some(device) = self.devices.get_mut(&device_id) {
                     device.battery_level = Some(level);
@@ -520,11 +457,6 @@ impl cosmic::Application for KdeConnectApplet {
         Subscription::batch(vec![
             cosmic::iced::time::every(std::time::Duration::from_secs(10))
                 .map(|_| Message::RefreshDevices),
-            // Desktop clipboard auto-sync: KDE Connect's Android app doesn't push
-            // OS-level clipboard-change events over D-Bus, so poll like upstream
-            // kdeconnect-kde's ClipboardListener does.
-            cosmic::iced::time::every(std::time::Duration::from_secs(2))
-                .map(|_| Message::PollClipboard),
             backend::filetransfer_subscription(),
             backend::service_watcher_subscription(),
             backend::mpris_subscription(),
@@ -538,9 +470,7 @@ impl cosmic::Application for KdeConnectApplet {
                             kdeconnect_dbus_client::ServiceEvent::PairingRequested(id, name) => {
                                 yield Message::PairingRequestReceived(id, name);
                             }
-                            kdeconnect_dbus_client::ServiceEvent::ClipboardReceived(content) => {
-                                yield Message::ClipboardReceived(content);
-                            }
+                            kdeconnect_dbus_client::ServiceEvent::ClipboardReceived(_) => {}
                             kdeconnect_dbus_client::ServiceEvent::BatteryReceived(id, level, charging) => {
                                 yield Message::BatteryUpdated(id, level, charging);
                             }

@@ -39,7 +39,7 @@ pub enum CoreEvent {
     Error(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum AppEvent {
     Broadcasting,
     Disconnect(DeviceId),
@@ -52,6 +52,12 @@ pub enum AppEvent {
     MprisAction((DeviceId, String, MprisAction)),
     SendMprisRequest((DeviceId, MprisRequest)),
     SendPacket(DeviceId, ProtocolPacket),
+    /// Queue a packet and report whether a live transport writer accepted it.
+    SendPacketWithReply(
+        DeviceId,
+        ProtocolPacket,
+        tokio::sync::oneshot::Sender<Result<(), String>>,
+    ),
     PushLocalCommands(DeviceId),
     SetPluginEnabled {
         device_id: DeviceId,
@@ -63,6 +69,10 @@ pub enum AppEvent {
 #[derive(Debug, Clone)]
 pub enum ConnectionEvent {
     ClipboardReceived(String),
+    ClipboardConnectReceived {
+        content: String,
+        timestamp: Option<u64>,
+    },
     Connected((DeviceId, Device)),
     DevicePaired((DeviceId, Device)),
     Disconnected(DeviceId),
