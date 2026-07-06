@@ -114,8 +114,9 @@ Requires `flatpak-builder`:
 flatpak-builder --force-clean --user --install-deps-from=flathub --repo=repo --install builddir io.github.hepp3n.kdeconnect.json
 ```
 
-## Troubleshooting
+# Troubleshooting
 
+## Firewall
 Some distributions enables Firewall by default. Or you are enabled it by yourself.
 In this case, check what firewall you are using. And allow 1714-1764 port range for TCP and UDP connections.
 
@@ -147,4 +148,28 @@ sudo iptables -A OUTPUT -o <yourinterface> -p tcp --sport 1714:1764 -m state --s
 For more, directly from official KDEConnect userbase: [KDEConnect Firewall](https://userbase.kde.org/KDEConnect#ufw)
 
 
+## Flatpak Service and Applet Logs
+For contributors: There is a opt-in logger for flatpak that is helpful when troubleshooting sandbox issues.
 
+To Enable:
+```bash
+flatpak override --user --env=RUST_LOG=info --env=KDECONNECT_LOG_FILE=1 io.github.hepp3n.kdeconnect
+```
+To Disable:
+```bash
+flatpak override --user --unset-env=RUST_LOG --unset-env=KDECONNECT_LOG_FILE io.github.hepp3n.kdeconnect
+```
+
+Logs will be generated in `~/.var/app/io.github.hepp3n.kdeconnect/data/`
+
+**Note**
+You may need to restart the instantace for the override to take effect. If the applet is placed in the cosmic panel you can simply kill the panel and it will restart all applets in the panel:
+
+```bash
+killall cosmic-panel
+```
+Using the `flatpak kill` command works as well if you perfer this method. The instance will auto restart after stopping if it's installed in the panel.
+
+```bash
+flatpak --user kill io.github.hepp3n.kdeconnect
+```

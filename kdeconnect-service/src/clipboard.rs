@@ -3,9 +3,12 @@
 //! A panel applet cannot reliably use `wl_data_device`: reads and writes are
 //! tied to keyboard focus and an input serial. This worker uses the privileged
 //! `ext-data-control-v1` protocol, or its older `wlr-data-control-v1` equivalent,
-//! on a separate connection instead. COSMIC hides both protocols from a
-//! Flatpak security-context socket, so the Flatpak manifest grants access to
-//! the host runtime directory and this worker opens the real Wayland socket.
+//! on a separate connection instead. COSMIC hides both protocols from the
+//! Flatpak-provided (security-context-filtered) Wayland socket, so the Flatpak
+//! manifest grants filesystem access to just the two common host socket
+//! names (`wayland-0`, `wayland-1`) instead of the whole runtime directory,
+//! and this worker connects to that raw socket directly.
+//! Additional socket access may be needed the future - Depends on use case!
 
 use anyhow::{Context, Result, anyhow};
 use calloop::{EventLoop, channel};

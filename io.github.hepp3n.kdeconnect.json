@@ -12,7 +12,8 @@
     "finish-args": [
         "--share=ipc",
         "--socket=wayland",
-        "--filesystem=/run/user",
+        "--filesystem=xdg-run/wayland-0",
+        "--filesystem=xdg-run/wayland-1",
         "--socket=session-bus",
         "--device=dri",
         "--share=network",
