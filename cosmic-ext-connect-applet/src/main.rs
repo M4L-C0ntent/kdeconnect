@@ -107,6 +107,10 @@ impl cosmic::Application for KdeConnectApplet {
                 return if let Some(p) = self.popup.take() {
                     destroy_popup(p)
                 } else {
+                    // Fetch devices right away — the polling subscriptions
+                    // only run while the popup is open, and their first tick
+                    // is a full interval away. The unread-SMS check follows
+                    // from the DevicesUpdated this produces.
                     Task::batch(vec![
                         self.show_popup(),
                         Task::perform(backend::fetch_devices(), |devices| {
@@ -121,15 +125,11 @@ impl cosmic::Application for KdeConnectApplet {
                 }
             }
             Message::RefreshDevices => {
-                let device_ids: Vec<String> = self.devices.keys().cloned().collect();
-                return Task::batch(vec![
-                    Task::perform(backend::fetch_devices(), |devices| {
-                        cosmic::Action::App(Message::DevicesUpdated(devices))
-                    }),
-                    Task::perform(backend::check_unread_sms(device_ids), |unread| {
-                        cosmic::Action::App(Message::UnreadSmsUpdated(unread))
-                    }),
-                ]);
+                // The unread-SMS check follows from the resulting
+                // DevicesUpdated, against the fresh device list.
+                return Task::perform(backend::fetch_devices(), |devices| {
+                    cosmic::Action::App(Message::DevicesUpdated(devices))
+                });
             }
             Message::UnreadSmsUpdated(unread) => {
                 self.unread_sms = unread;
@@ -138,6 +138,16 @@ impl cosmic::Application for KdeConnectApplet {
                 self.devices.clear();
                 for device in devices {
                     self.devices.insert(device.id.clone(), device);
+                }
+                // Refresh the unread-SMS indicators for the devices we just
+                // learned about, but only while the popup showing them is
+                // open (this also covers the first-ever popup open, when
+                // TogglePopup ran with an empty device map).
+                if self.popup.is_some() && !self.devices.is_empty() {
+                    let device_ids: Vec<String> = self.devices.keys().cloned().collect();
+                    return Task::perform(backend::check_unread_sms(device_ids), |unread| {
+                        cosmic::Action::App(Message::UnreadSmsUpdated(unread))
+                    });
                 }
             }
             Message::DelayedRefresh => {
@@ -454,14 +464,12 @@ impl cosmic::Application for KdeConnectApplet {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         use futures::StreamExt as _;
-        Subscription::batch(vec![
-            cosmic::iced::time::every(std::time::Duration::from_secs(10))
-                .map(|_| Message::RefreshDevices),
+
+        let mut subscriptions = vec![
             backend::filetransfer_subscription(),
             backend::service_watcher_subscription(),
-            backend::mpris_subscription(),
             // D-Bus event stream — delivers pairing requests and device state
-            // changes in real time without waiting for the 10s poll.
+            // changes in real time without waiting for the poll below.
             Subscription::run(|| {
                 async_stream::stream! {
                     let mut stream = backend::event_stream().await;
@@ -494,7 +502,23 @@ impl cosmic::Application for KdeConnectApplet {
                     }
                 }
             }),
-        ])
+        ];
+
+        // Polling is only useful while its results are on screen. With the
+        // popup closed the applet is a static icon fed by the event stream
+        // above, so don't wake up to poll devices, unread SMS, or MPRIS —
+        // every such wakeup also wakes the panel that hosts us. Both
+        // subscriptions poll immediately on popup open (TogglePopup fetches
+        // devices/SMS, the MPRIS stream yields its first snapshot at once).
+        if self.popup.is_some() {
+            subscriptions.push(
+                cosmic::iced::time::every(std::time::Duration::from_secs(10))
+                    .map(|_| Message::RefreshDevices),
+            );
+            subscriptions.push(backend::mpris_subscription());
+        }
+
+        Subscription::batch(subscriptions)
     }
 }
 

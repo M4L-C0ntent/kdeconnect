@@ -466,7 +466,7 @@ pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> 
             use zbus::{MatchRule, MessageStream};
             use futures::StreamExt;
 
-            let Ok(connection) = zbus::Connection::session().await else { return; };
+            let Some(connection) = session_bus().await else { return; };
 
             let rule = MatchRule::builder()
                 .msg_type(zbus::message::Type::Signal)
@@ -476,7 +476,7 @@ pub fn service_watcher_subscription() -> Subscription<crate::messages::Message> 
                 .build();
 
             let Ok(mut stream): Result<zbus::MessageStream, _> =
-                MessageStream::for_match_rule(rule, &connection, None).await else { return; };
+                MessageStream::for_match_rule(rule, connection, None).await else { return; };
 
             while let Some(Ok(msg)) = stream.next().await {
                 let msg: zbus::Message = msg;
@@ -539,6 +539,19 @@ pub fn filetransfer_subscription() -> Subscription<crate::messages::Message> {
 
 const MPRIS_BUS_PREFIX: &str = "org.mpris.MediaPlayer2.KDEConnect_";
 
+/// Shared session-bus connection. Creating a `zbus::Connection` performs a
+/// socket connect + auth + Hello() roundtrip; doing that on every MPRIS poll
+/// tick and every media-button press added user-visible latency and constant
+/// churn. zbus multiplexes concurrent calls on one connection, so a single
+/// shared one is all we need.
+async fn session_bus() -> Option<&'static zbus::Connection> {
+    static BUS: tokio::sync::OnceCell<zbus::Connection> = tokio::sync::OnceCell::const_new();
+    BUS.get_or_try_init(zbus::Connection::session)
+        .await
+        .map_err(|e| warn!("[mpris] failed to connect to session bus: {:?}", e))
+        .ok()
+}
+
 #[zbus::proxy(interface = "org.mpris.MediaPlayer2", default_path = "/org/mpris/MediaPlayer2")]
 trait MprisRoot {
     #[zbus(property)]
@@ -569,9 +582,12 @@ trait MprisPlayer {
 }
 
 async fn read_now_playing(connection: &zbus::Connection, bus_name: &str) -> Option<NowPlaying> {
+    // These proxies live for one poll: skip zbus's property cache, which
+    // would issue a GetAll and subscribe to PropertiesChanged on every build.
     let root = MprisRootProxy::builder(connection)
         .destination(bus_name)
         .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
         .ok()?;
@@ -583,6 +599,7 @@ async fn read_now_playing(connection: &zbus::Connection, bus_name: &str) -> Opti
     let player = MprisPlayerProxy::builder(connection)
         .destination(bus_name)
         .ok()?
+        .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
         .ok()?;
@@ -643,10 +660,10 @@ pub fn mpris_subscription() -> Subscription<crate::messages::Message> {
 async fn poll_now_playing() -> HashMap<String, NowPlaying> {
     let mut snapshot = HashMap::new();
 
-    let Ok(connection) = zbus::Connection::session().await else {
+    let Some(connection) = session_bus().await else {
         return snapshot;
     };
-    let Ok(dbus) = zbus::fdo::DBusProxy::new(&connection).await else {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(connection).await else {
         return snapshot;
     };
     let Ok(names) = dbus.list_names().await else {
@@ -658,7 +675,7 @@ async fn poll_now_playing() -> HashMap<String, NowPlaying> {
         if !name.starts_with(MPRIS_BUS_PREFIX) {
             continue;
         }
-        if let Some(now_playing) = read_now_playing(&connection, &name).await {
+        if let Some(now_playing) = read_now_playing(connection, &name).await {
             snapshot.insert(name, now_playing);
         }
     }
@@ -669,14 +686,14 @@ async fn poll_now_playing() -> HashMap<String, NowPlaying> {
 /// Sends a transport control to one phone player by calling the standard
 /// MPRIS method directly on its D-Bus service.
 pub async fn mpris_control(bus_name: String, action: MprisControlAction) {
-    let Ok(connection) = zbus::Connection::session().await else {
+    let Some(connection) = session_bus().await else {
         warn!("[mpris] no session bus connection for control action");
         return;
     };
-    let player = MprisPlayerProxy::builder(&connection)
+    let player = MprisPlayerProxy::builder(connection)
         .destination(bus_name.as_str())
         .ok()
-        .map(|b| b.build());
+        .map(|b| b.cache_properties(zbus::proxy::CacheProperties::No).build());
     let Some(player) = player else {
         warn!("[mpris] failed to build player proxy for {}", bus_name);
         return;
