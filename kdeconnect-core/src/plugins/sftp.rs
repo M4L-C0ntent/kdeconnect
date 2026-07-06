@@ -95,6 +95,15 @@ impl SftpInfo {
     pub async fn browse(&self, device_id: &str, device_name: &str) -> anyhow::Result<PathBuf> {
         preflight().await?;
 
+        // `user` becomes the leading characters of the "user@host:path"
+        // argument sshfs receives. A value starting with '-' would make
+        // that whole argument look like an option instead of the host
+        // string to sshfs's parser — reject it rather than hand a
+        // phone-controlled string a chance to be read as an sshfs/ssh flag.
+        if self.user.starts_with('-') {
+            anyhow::bail!("rejecting sftp user starting with '-': {}", self.user);
+        }
+
         // Serialise the whole mount lifecycle for this device so a second
         // browse (double-click, or a duplicate sftp packet) can't race a
         // second sshfs onto the same point.
