@@ -39,6 +39,7 @@ pub enum ServiceEvent {
     ConnectivityReceived(String, i32),         // device_id, signal_strength
     RunCommandListReceived(String, String),    // device_id, commands_json
     BrowseFailed(String, String),              // device_id, message
+    MountStateChanged(String, bool),           // device_id, mounted
     /// (filename/unique_identifier, local file path)
     SmsAttachmentReceived(String, String),
     /// Phone -> base64-encoded photo
@@ -61,6 +62,8 @@ trait Daemon {
     async fn share_clipboard(&self, device_id: &str) -> zbus::Result<()>;
     async fn ring_device(&self, device_id: &str) -> zbus::Result<()>;
     async fn browse_device(&self, device_id: &str) -> zbus::Result<()>;
+    async fn unmount_device(&self, device_id: &str) -> zbus::Result<()>;
+    async fn mounted_devices(&self) -> zbus::Result<Vec<String>>;
     async fn set_plugin_enabled(
         &self,
         device_id: &str,
@@ -117,6 +120,9 @@ trait Daemon {
 
     #[zbus(signal)]
     async fn browse_failed(&self, device_id: String, message: String) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn mount_state_changed(&self, device_id: String, mounted: bool) -> zbus::Result<()>;
 }
 
 /// D-Bus proxy for SMS interface
@@ -239,6 +245,16 @@ impl KdeConnectClient {
     /// Ask a device to start its SFTP server so we can browse its filesystem
     pub async fn browse_device(&self, device_id: &str) -> Result<()> {
         Ok(self.daemon_proxy.browse_device(device_id).await?)
+    }
+
+    /// Unmount a device's SFTP share (the counterpart of browse_device)
+    pub async fn unmount_device(&self, device_id: &str) -> Result<()> {
+        Ok(self.daemon_proxy.unmount_device(device_id).await?)
+    }
+
+    /// Device IDs whose SFTP share is currently mounted
+    pub async fn mounted_devices(&self) -> Result<Vec<String>> {
+        Ok(self.daemon_proxy.mounted_devices().await?)
     }
 
     /// Enable or disable a plugin for a device
@@ -536,6 +552,23 @@ impl KdeConnectClient {
                 }
             });
 
+        let mount_state = self
+            .daemon_proxy
+            .receive_mount_state_changed()
+            .await?
+            .filter_map(|s| async move {
+                match s.args() {
+                    Ok(args) => Some(ServiceEvent::MountStateChanged(
+                        args.device_id.clone(),
+                        args.mounted,
+                    )),
+                    Err(e) => {
+                        error!("Failed to parse MountStateChanged signal: {:?}", e);
+                        None
+                    }
+                }
+            });
+
         let attachment = self
             .sms_proxy
             .receive_sms_attachment_received()
@@ -583,6 +616,7 @@ impl KdeConnectClient {
             Box::pin(connectivity),
             Box::pin(run_command_list),
             Box::pin(browse_failed),
+            Box::pin(mount_state),
             Box::pin(attachment),
             Box::pin(contact_photos),
         ])))

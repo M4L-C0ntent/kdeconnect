@@ -85,6 +85,7 @@ fn merge_device(
     device_type: String,
     is_paired: bool,
     is_reachable: bool,
+    mounted: &[String],
     cache: &mut HashMap<String, Device>,
 ) -> Device {
     let existing = cache.get(&id).cloned();
@@ -108,6 +109,7 @@ fn merge_device(
         has_share: true,
         share_progress: existing.as_ref().and_then(|e| e.share_progress),
         has_sftp: true,
+        is_mounted: mounted.iter().any(|m| m == &id),
         has_mpris: false,
         has_remote_keyboard: false,
         has_presenter: false,
@@ -120,6 +122,8 @@ fn merge_device(
 }
 
 pub async fn fetch_devices() -> Vec<Device> {
+    let mounted = mounted_devices().await;
+
     if let Some(Ok(reply)) = via_varlink(|c| async move {
         use kdeconnect_varlink::iface::VarlinkClientInterface;
         c.list_devices().call().await
@@ -130,7 +134,7 @@ pub async fn fetch_devices() -> Vec<Device> {
         let devices: Vec<Device> = reply
             .devices
             .into_iter()
-            .map(|d| merge_device(d.id, d.name, d.device_type, d.is_paired, d.is_reachable, &mut cache))
+            .map(|d| merge_device(d.id, d.name, d.device_type, d.is_paired, d.is_reachable, &mounted, &mut cache))
             .collect();
         return devices;
     }
@@ -146,7 +150,7 @@ pub async fn fetch_devices() -> Vec<Device> {
             let mut cache = DEVICE_CACHE.lock().await;
             dbus_devices
                 .into_iter()
-                .map(|d| merge_device(d.id, d.name, "phone".to_string(), d.is_paired, d.is_reachable, &mut cache))
+                .map(|d| merge_device(d.id, d.name, "phone".to_string(), d.is_paired, d.is_reachable, &mounted, &mut cache))
                 .collect()
         }
         Err(e) => {
@@ -232,6 +236,35 @@ pub async fn browse_device_filesystem(device_id: String) -> Result<()> {
     }).await { return r; }
     let g = CLIENT.lock().await;
     dbus_client!(g).browse_device(&device_id).await
+}
+
+/// Unmount a device's SFTP share (the counterpart of browse).
+pub async fn unmount_device(device_id: String) -> Result<()> {
+    if let Some(r) = via_varlink(|c| {
+        let id = device_id.clone();
+        async move {
+            use kdeconnect_varlink::iface::VarlinkClientInterface;
+            c.unmount_device(id).call().await.map(|_| ())
+        }
+    }).await { return r; }
+    let g = CLIENT.lock().await;
+    dbus_client!(g).unmount_device(&device_id).await
+}
+
+/// Device IDs whose SFTP share is currently mounted. Errors degrade to
+/// "nothing mounted" — the applet then just shows the Browse button.
+pub async fn mounted_devices() -> Vec<String> {
+    if let Some(Ok(reply)) = via_varlink(|c| async move {
+        use kdeconnect_varlink::iface::VarlinkClientInterface;
+        c.mounted_devices().call().await
+    }).await {
+        return reply.device_ids;
+    }
+    let g = CLIENT.lock().await;
+    match g.as_ref() {
+        Some(client) => client.mounted_devices().await.unwrap_or_default(),
+        None => vec![],
+    }
 }
 
 pub async fn accept_pairing(device_id: String) -> Result<()> {

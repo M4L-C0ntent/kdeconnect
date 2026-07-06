@@ -334,6 +334,14 @@ fn create_device_card<'a>(
                         .width(Length::Fill)
                         .class(theme::accent_link_button(accent_color)),
                 );
+                if device.is_mounted {
+                    menu_items = menu_items.push(
+                        widget::button::text(fl!("quick-actions-unmount-device"))
+                            .on_press(Message::UnmountDevice(device.id.clone()))
+                            .width(Length::Fill)
+                            .class(theme::accent_link_button(accent_color)),
+                    );
+                }
             }
         }
 

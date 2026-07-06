@@ -353,11 +353,64 @@ impl DaemonInterface {
     /// Ask a device to start its SFTP server so we can browse its filesystem
     async fn browse_device(&self, device_id: String) -> zbus::fdo::Result<()> {
         info!("D-Bus: BrowseDevice called for {}", device_id);
+        // Fast path: if the share is already mounted and responsive, just
+        // (re)open the file manager — no phone round-trip, no remount.
+        let device_name = self
+            .devices
+            .lock()
+            .await
+            .get(&device_id)
+            .map(|d| d.name.clone());
+        if let Some(name) = device_name.as_deref() {
+            if kdeconnect_core::plugins::sftp::open_mounted(&device_id, name).await {
+                debug!("BrowseDevice: {} already mounted, opened directly", device_id);
+                return Ok(());
+            }
+        }
         let packet = ProtocolPacket::new(PacketType::SftpRequest, json!({ "startBrowsing": true }));
         self.event_sender
             .send(AppEvent::SendPacket(DeviceId(device_id), packet))
             .map_err(|e| zbus::fdo::Error::Failed(e.to_string()))?;
         Ok(())
+    }
+
+    /// Unmount a device's SFTP share (the counterpart of BrowseDevice).
+    async fn unmount_device(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        device_id: String,
+    ) -> zbus::fdo::Result<()> {
+        info!("D-Bus: UnmountDevice called for {}", device_id);
+        let device_name = self
+            .devices
+            .lock()
+            .await
+            .get(&device_id)
+            .map(|d| d.name.clone())
+            .unwrap_or_default();
+        match kdeconnect_core::plugins::sftp::unmount(&device_id, &device_name).await {
+            Ok(unmounted) => {
+                if unmounted {
+                    let _ = Self::mount_state_changed(&emitter, device_id, false).await;
+                }
+                Ok(())
+            }
+            Err(e) => Err(zbus::fdo::Error::Failed(e.to_string())),
+        }
+    }
+
+    /// Device IDs whose SFTP share is currently mounted, straight from the
+    /// host mount table (so a mount the user ejected from the file manager
+    /// no longer counts).
+    async fn mounted_devices(&self) -> zbus::fdo::Result<Vec<String>> {
+        let pairs: Vec<(String, String)> = self
+            .devices
+            .lock()
+            .await
+            .iter()
+            .map(|(id, d)| (id.clone(), d.name.clone()))
+            .collect();
+        Ok(kdeconnect_core::plugins::sftp::mounted_devices(&pairs).await)
     }
 
     /// Enable or disable a plugin for a device.
@@ -485,6 +538,16 @@ impl DaemonInterface {
         signal_emitter: &SignalEmitter<'_>,
         device_id: String,
         message: String,
+    ) -> zbus::Result<()>;
+
+    /// Signal: A device's SFTP share was mounted (true) or unmounted
+    /// (false) — the latter fires both for explicit UnmountDevice calls and
+    /// for the automatic unmount on device disconnect.
+    #[zbus(signal)]
+    async fn mount_state_changed(
+        signal_emitter: &SignalEmitter<'_>,
+        device_id: String,
+        mounted: bool,
     ) -> zbus::Result<()>;
 
     /// Execute a remote command on a device by key
@@ -780,6 +843,10 @@ impl KdeConnectService {
             _ = sigterm.recv() => { info!("SIGTERM received, shutting down"); }
             _ = session_ended => { info!("Session D-Bus closed, shutting down"); }
         }
+
+        // Retire any SFTP mounts we created: once this process (and with it
+        // the phone link) is gone they would only go stale.
+        kdeconnect_core::plugins::sftp::unmount_all().await;
         Ok(())
     }
 }
@@ -1128,11 +1195,45 @@ impl KdeConnectService {
 
                 // Mark unreachable but keep in map so UI can still show it
                 // and allow pairing attempts after reconnect.
-                {
+                let device_name = {
                     let mut map = devices.lock().await;
                     if let Some(dev) = map.get_mut(&device_id.0) {
                         dev.is_reachable = false;
+                        Some(dev.name.clone())
+                    } else {
+                        None
                     }
+                };
+
+                // Auto-unmount the SFTP share: with the phone gone the FUSE
+                // mount can only produce IO errors, so retire it now rather
+                // than leaving a wedged entry in the file manager. Spawned —
+                // unmounting talks to host processes and must not stall the
+                // event loop.
+                if let Some(name) = device_name {
+                    let conn = connection.clone();
+                    let did = device_id.0.clone();
+                    tokio::spawn(async move {
+                        match kdeconnect_core::plugins::sftp::unmount(&did, &name).await {
+                            Ok(true) => {
+                                info!("[sftp] auto-unmounted {} after disconnect", did);
+                                if let Ok(iface_ref) = conn
+                                    .object_server()
+                                    .interface::<_, DaemonInterface>(DAEMON_PATH)
+                                    .await
+                                {
+                                    let _ = DaemonInterface::mount_state_changed(
+                                        iface_ref.signal_emitter(),
+                                        did,
+                                        false,
+                                    )
+                                    .await;
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(e) => warn!("[sftp] auto-unmount of {} failed: {}", did, e),
+                        }
+                    });
                 }
 
                 let mut cid = current_device_id.lock().await;
@@ -1456,6 +1557,24 @@ impl KdeConnectService {
                     commands_json: Some(commands_json),
                     ..Default::default()
                 });
+            }
+            ConnectionEvent::SftpMountStateChanged((device_id, mounted)) => {
+                info!(
+                    "[dbus] MountStateChanged for {}: mounted={}",
+                    device_id.0, mounted
+                );
+
+                let iface_ref = connection
+                    .object_server()
+                    .interface::<_, DaemonInterface>(DAEMON_PATH)
+                    .await?;
+                DaemonInterface::mount_state_changed(
+                    iface_ref.signal_emitter(),
+                    device_id.0.clone(),
+                    mounted,
+                )
+                .await?;
+                debug!("MountStateChanged D-Bus signal emitted");
             }
             ConnectionEvent::SftpBrowseFailed((device_id, message)) => {
                 warn!("[dbus] BrowseFailed for {}: {}", device_id.0, message);

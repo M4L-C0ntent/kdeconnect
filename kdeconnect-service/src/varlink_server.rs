@@ -6,7 +6,8 @@ use kdeconnect_varlink::iface::{
     self, BatteryState, Device, VarlinkInterface,
     Call_ListDevices, Call_PairDevice, Call_UnpairDevice, Call_SendPing,
     Call_SendFiles, Call_SendClipboard, Call_ShareClipboard, Call_RunCommand,
-    Call_RingDevice, Call_BrowseDevice, Call_BroadcastIdentity, Call_RequestRunCommands,
+    Call_RingDevice, Call_BrowseDevice, Call_UnmountDevice, Call_MountedDevices,
+    Call_BroadcastIdentity, Call_RequestRunCommands,
     Call_SetPluginEnabled, Call_GetPluginEnabled, Call_GetDisabledPlugins,
     Call_AcceptPairing, Call_RejectPairing, Call_Subscribe,
     Call_RequestConversations, Call_RequestConversation, Call_SendSms,
@@ -154,9 +155,42 @@ impl VarlinkInterface for KdeConnectVarlinkService {
     }
 
     async fn browse_device(&self, call: &mut dyn Call_BrowseDevice, device_id: String) -> varlink::Result<()> {
+        // Fast path mirroring the D-Bus BrowseDevice: already mounted and
+        // healthy → just reopen the file manager, skip the phone round-trip.
+        let device_name = self.devices.lock().await.get(&device_id).map(|d| d.name.clone());
+        if let Some(name) = device_name.as_deref() {
+            if kdeconnect_core::plugins::sftp::open_mounted(&device_id, name).await {
+                return call.reply();
+            }
+        }
         let packet = ProtocolPacket::new(PacketType::SftpRequest, json!({ "startBrowsing": true }));
         let _ = self.event_sender.send(AppEvent::SendPacket(DeviceId(device_id), packet));
         call.reply()
+    }
+
+    async fn unmount_device(&self, call: &mut dyn Call_UnmountDevice, device_id: String) -> varlink::Result<()> {
+        let device_name = self
+            .devices
+            .lock()
+            .await
+            .get(&device_id)
+            .map(|d| d.name.clone())
+            .unwrap_or_default();
+        match kdeconnect_core::plugins::sftp::unmount(&device_id, &device_name).await {
+            Ok(_) => call.reply(),
+            Err(e) => call.reply_service_error(e.to_string()),
+        }
+    }
+
+    async fn mounted_devices(&self, call: &mut dyn Call_MountedDevices) -> varlink::Result<()> {
+        let pairs: Vec<(String, String)> = self
+            .devices
+            .lock()
+            .await
+            .iter()
+            .map(|(id, d)| (id.clone(), d.name.clone()))
+            .collect();
+        call.reply(kdeconnect_core::plugins::sftp::mounted_devices(&pairs).await)
     }
 
     async fn broadcast_identity(&self, call: &mut dyn Call_BroadcastIdentity) -> varlink::Result<()> {
