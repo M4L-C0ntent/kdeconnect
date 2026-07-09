@@ -43,6 +43,21 @@
   </recommends>
   <releases>
     <!-- Latest Version -->
+    <release version="0.9.1" date="2026-07-09">
+      <url type="details">https://github.com/cosmic-utils/kdeconnect</url>
+      <description>
+        <p>The is the new version with the following changes:</p>
+        <ul>
+          <li>Fixes Clipboard bug - Is now bidirectional</li>
+          <li>Added Mount/Unmount to Browse Files Plugin - Now mounts under ~/KDE Connect/<device> and auto-unmounts on disconnect</li>
+          <li>Memory Optimization - Fixes slow animations in drop menu</li>
+          <li>Please keep in mind, this is still a WIP - many things working but you might experience bugs.</li>
+          <li>Please report them under Github in issues section.</li>
+          <li>This new version still requires more testing before the release of v1.</li>
+        </ul>
+      </description>
+    </release>
+    <!-- Previous Version -->
     <release version="0.9.0" date="2026-06-29">
       <url type="details">https://github.com/cosmic-utils/kdeconnect</url>
       <description>
@@ -59,7 +74,7 @@
         </ul>
       </description>
     </release>
-    <!-- Previous Version -->
+    <!-- Older Versions -->
     <release version="0.1.0" date="2026-03-11">
      <url type="details">https://github.com/cosmic-utils/kdeconnect</url>
      <description>
