@@ -14,7 +14,7 @@
 
 - Device Pairing / Unpairing
 - Battery Monitor
-- Clipboard Sync (Desktop to Mobile) - Working on bidirectional
+- Clipboard Sync (bidirectional)
 - Connectivity Report (signal strength / network type)
 - Contacts Sync
 - Find My Phone
