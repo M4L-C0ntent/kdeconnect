@@ -49,7 +49,7 @@
         <p>The is the new version with the following changes:</p>
         <ul>
           <li>Fixes Clipboard bug - Is now bidirectional</li>
-          <li>Added Mount/Unmount to Browse Files Plugin - Now mounts under ~/KDE Connect/<device> and auto-unmounts on disconnect</li>
+          <li>Added Mount/Unmount to Browse Files Plugin - Now mounts under ~/KDE Connect/&lt;device&gt; and auto-unmounts on disconnect</li>
           <li>Memory Optimization - Fixes slow animations in drop menu</li>
           <li>Please keep in mind, this is still a WIP - many things working but you might experience bugs.</li>
           <li>Please report them under Github in issues section.</li>
