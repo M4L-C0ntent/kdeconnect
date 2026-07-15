@@ -9,10 +9,9 @@ use models::{Device, NowPlaying};
 use cosmic::app::Core;
 use cosmic::iced::window::Id as SurfaceId;
 use cosmic::iced::{Limits, Subscription};
-use cosmic::iced::platform_specific::shell::commands::popup::{destroy_popup, get_popup};
 use cosmic::{Element, Task, widget};
+use cosmic::surface::action::{app_popup, destroy_popup};
 use std::collections::HashMap;
-use cosmic_ext_connect_applet::theme;
 use tracing::{debug, error, info, warn};
 
 pub struct KdeConnectApplet {
@@ -22,7 +21,6 @@ pub struct KdeConnectApplet {
     expanded_device: Option<String>,
     /// Pending pairing requests: device_id → device_name
     pairing_requests: HashMap<String, String>,
-    accent_color: cosmic::iced::Color,
     /// device_id -> has unread SMS, for the quick-actions menu indicator.
     unread_sms: HashMap<String, bool>,
     /// Set when an action fails in a way the user needs to know about and
@@ -32,31 +30,6 @@ pub struct KdeConnectApplet {
     /// Media section state, keyed by MPRIS D-Bus bus name. Refreshed by
     /// `backend::mpris_subscription`.
     now_playing: HashMap<String, NowPlaying>,
-}
-
-impl KdeConnectApplet {
-    /// Creates a new popup surface (tracked in `self.popup`) with the
-    /// applet's standard size limits. Shared by TogglePopup and
-    /// PairingRequestReceived, which both need to open the popup.
-    fn show_popup(&mut self) -> Task<cosmic::Action<Message>> {
-        let new_id = SurfaceId::unique();
-        self.popup.replace(new_id);
-
-        let mut popup_settings = self.core.applet.get_popup_settings(
-            self.core.main_window_id().unwrap(),
-            new_id,
-            None,
-            None,
-            None,
-        );
-        popup_settings.positioner.size_limits = Limits::NONE
-            .max_width(400.0)
-            .min_width(300.0)
-            .min_height(200.0)
-            .max_height(600.0);
-
-        get_popup(popup_settings)
-    }
 }
 
 impl cosmic::Application for KdeConnectApplet {
@@ -72,6 +45,10 @@ impl cosmic::Application for KdeConnectApplet {
         &mut self.core
     }
 
+    fn on_close_requested(&self, id: cosmic::iced::window::Id) -> Option<Self::Message> {
+	Some(Message::PopupClosed(id))
+    }
+    
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<cosmic::Action<Self::Message>>) {
         tokio::spawn(async {
             if let Err(e) = backend::initialize().await {
@@ -85,8 +62,6 @@ impl cosmic::Application for KdeConnectApplet {
             devices: HashMap::new(),
             expanded_device: None,
             pairing_requests: HashMap::new(),
-            accent_color: theme::try_load_cosmic_accent()
-                .unwrap_or(theme::FALLBACK_TEAL),
             unread_sms: HashMap::new(),
             error_banner: None,
             now_playing: HashMap::new(),
@@ -94,36 +69,55 @@ impl cosmic::Application for KdeConnectApplet {
 
         (app, Task::none())
     }
-
-    fn on_close_requested(&self, id: SurfaceId) -> Option<Message> {
-        Some(Message::PopupClosed(id))
-    }
-
-    fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {        match message {
+    
+    fn update(&mut self, message: Self::Message) -> Task<cosmic::Action<Self::Message>> {
+	match message {
             Message::Noop => {}
             Message::TogglePopup => {
-                self.accent_color = theme::try_load_cosmic_accent()
-                    .unwrap_or(theme::FALLBACK_TEAL);
                 return if let Some(p) = self.popup.take() {
-                    destroy_popup(p)
+                    cosmic::surface::surface_task(destroy_popup(p))
                 } else {
+		    let show_popup = cosmic::surface::surface_task(app_popup(
+			|_| Default::default(),
+			|app: &mut KdeConnectApplet| {
+			    let new_id = cosmic::iced::window::Id::unique();
+			    
+			    app.popup.replace(new_id);
+			    
+			    let mut popup_settings = app.core.applet.get_popup_settings(
+				app.core.main_window_id().unwrap(),
+				new_id,
+				None,
+				None,
+				None,
+			    );
+			    popup_settings.positioner.size_limits = Limits::NONE
+				.max_width(400.0)
+				.min_width(300.0)
+				.min_height(200.0)
+				.max_height(600.0);
+			    popup_settings
+			},
+			None,
+		    ));
+		    
                     // Fetch devices right away — the polling subscriptions
                     // only run while the popup is open, and their first tick
                     // is a full interval away. The unread-SMS check follows
                     // from the DevicesUpdated this produces.
                     Task::batch(vec![
-                        self.show_popup(),
+                        show_popup,
                         Task::perform(backend::fetch_devices(), |devices| {
                             cosmic::Action::App(Message::DevicesUpdated(devices))
                         }),
                     ])
-                };
-            }
-            Message::PopupClosed(id) => {
-                if self.popup == Some(id) {
-                    self.popup = None;
                 }
             }
+	    Message::PopupClosed(id) => {
+		if self.popup.as_ref() == Some(&id) {
+		    self.popup = None;
+		}
+	    }
             Message::RefreshDevices => {
                 // The unread-SMS check follows from the resulting
                 // DevicesUpdated, against the fresh device list.
@@ -348,11 +342,6 @@ impl cosmic::Application for KdeConnectApplet {
                         .icon("network-wireless-symbolic")
                         .show();
                 });
-
-                // Ensure popup is open so the user sees Accept/Decline immediately.
-                if self.popup.is_none() {
-                    return self.show_popup();
-                }
             }
             Message::MprisReceived(device_id, mpris_data) => {
                 debug!("MPRIS from {}: {:?}", device_id, mpris_data);
@@ -461,7 +450,6 @@ impl cosmic::Application for KdeConnectApplet {
             &self.devices,
             self.expanded_device.as_ref(),
             Some(&self.pairing_requests),
-            self.accent_color,
             &self.unread_sms,
             self.error_banner.as_ref(),
             &self.now_playing,
