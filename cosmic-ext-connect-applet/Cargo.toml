@@ -23,7 +23,7 @@ futures-util = { workspace = true }
 urlencoding = { workspace = true }
 serde_json = { workspace = true }
 lazy_static = { workspace = true }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 ctrlc = { workspace = true }
 async-stream = { workspace = true }
 anyhow = { workspace = true }
@@ -37,9 +37,9 @@ dirs = { workspace = true }
 ron = { workspace = true }
 serde = { workspace = true }
 tracing-appender = { workspace = true }
-i18n-embed = { version = "0.16", features = ["fluent-system", "desktop-requester"] }
-i18n-embed-fl = "0.10"
-rust-embed = "8"
+i18n-embed = { version = "0.16.0", features = ["fluent-system", "desktop-requester"] }
+i18n-embed-fl = "0.10.0"
+rust-embed = "8.12.0"
 
 [[bin]]
 name = "cosmic-ext-connect-applet"
