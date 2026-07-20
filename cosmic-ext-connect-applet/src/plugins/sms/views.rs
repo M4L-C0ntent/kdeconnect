@@ -161,8 +161,7 @@ pub fn view_new_chat_dialog(app: &SmsWindow) -> Element<'_, SmsMessage> {
         .height(Length::Fixed(500.0));
 
     widget::container(content)
-        .class(cosmic::theme::Container::Card)
-        .width(Length::Fill)
+        .max_width(1000.0)
         .into()
 }
 
