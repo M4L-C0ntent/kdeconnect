@@ -1,3 +1,4 @@
+
 use crate::messages::Message;
 use crate::models::{Device, NowPlaying};
 use cosmic::app::Core;
@@ -240,7 +241,7 @@ fn create_device_card<'a>(
     if is_expanded && is_online {
         let mut menu_items = widget::Column::new().spacing(spacing.space_xxs);
 
-        let mut quick_actions_list = widget::list_column();
+        let mut quick_actions_list = widget::list_column().style(cosmic::theme::Container::Transparent);
 
         quick_actions_list =
             quick_actions_list.add(widget::text::caption_heading(fl!("quick-actions-header")));

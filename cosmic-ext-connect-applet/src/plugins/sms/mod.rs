@@ -23,9 +23,6 @@ pub use app::SmsWindow;
 /// cosmic-ext-connect-sms itself is built.
 #[allow(dead_code)]
 pub fn run(device_id: String, device_name: String) -> cosmic::iced::Result {
-    let mut settings = cosmic::app::Settings::default();
-    if let Some(theme) = crate::theme::try_load_cosmic_theme() {
-        settings = settings.theme(theme);
-    }
+    let settings = cosmic::app::Settings::default();
     cosmic::app::run::<SmsWindow>(settings, (device_id, device_name))
 }
