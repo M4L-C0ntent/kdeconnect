@@ -43,11 +43,12 @@
   </recommends>
   <releases>
     <!-- Latest Version -->
-    <release version="0.9.1" date="2026-07-09">
+    <release version="0.10.0" date="2026-07-21">
       <url type="details">https://github.com/cosmic-utils/kdeconnect</url>
       <description>
         <p>The is the new version with the following changes:</p>
         <ul>
+	  <li>Updated libcosmic and now follows system theme</li>
           <li>Fixes Clipboard bug - Is now bidirectional</li>
           <li>Added Mount/Unmount to Browse Files Plugin - Now mounts under ~/KDE Connect/&lt;device&gt; and auto-unmounts on disconnect</li>
           <li>Memory Optimization - Fixes slow animations in drop menu</li>
