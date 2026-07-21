@@ -38,7 +38,7 @@ pub enum SmsMessage {
     OpenNewChatDialog,
     CloseNewChatDialog,
     UpdateNewChatPhone(String),
-    SelectContactForNewChat(String, String),
+    SelectContactForNewChat(usize),
     CreateNewChat,
 
     // Emoji picker

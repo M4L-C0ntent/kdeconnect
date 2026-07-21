@@ -1,13 +1,12 @@
 //! UI view implementations for the SMS window.
 
-use cosmic::widget::button::Catalog;
-use cosmic::Element;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget;
+use cosmic::Element;
 
 use super::actions::SmsMessage;
 use super::app::SmsWindow;
-use super::emoji::{EmojiCategory, is_emoji_char};
+use super::emoji::{is_emoji_char, EmojiCategory};
 use super::models::Conversation;
 use super::utils::{format_timestamp, normalize_phone_number, phone_numbers_match};
 
@@ -44,15 +43,18 @@ fn truncate_preview(s: &str, max_chars: usize) -> String {
 /// caller can pass something built on the fly (e.g. a truncated preview)
 /// without that temporary having to outlive the returned `Element`.
 fn mixed_emoji_text<'a, M: 'a>(s: &str, size: u16) -> Element<'a, M> {
-    use cosmic::iced::widget::{rich_text, span};
     use cosmic::iced::widget::text::Span;
+    use cosmic::iced::widget::{rich_text, span};
 
     let mut spans: Vec<Span<'a, (), cosmic::iced::Font>> = Vec::new();
     let mut run_start = 0;
     let mut run_is_emoji = false;
     let mut first_run = true;
 
-    let push_run = |spans: &mut Vec<Span<'a, (), cosmic::iced::Font>>, start: usize, end: usize, is_emoji: bool| {
+    let push_run = |spans: &mut Vec<Span<'a, (), cosmic::iced::Font>>,
+                    start: usize,
+                    end: usize,
+                    is_emoji: bool| {
         if start == end {
             return;
         }
@@ -86,141 +88,20 @@ pub static CONVERSATIONS_SCROLLABLE_ID: std::sync::LazyLock<cosmic::widget::Id> 
 pub fn view_main(app: &SmsWindow) -> Element<'_, SmsMessage> {
     let spacing = cosmic::theme::active().cosmic().spacing;
 
-    widget::Row::new()
-        .spacing(0)
-        .push(view_conversations_list(app, &spacing))
-        .push(
-            widget::container(widget::divider::vertical::default())
-                .height(Length::Fill)
-                .padding([0, spacing.space_xxs]),
-        )
-        .push(view_thread_panel(app, &spacing))
-        .into()
-}
-
-/// New chat dialog view
-pub fn view_new_chat_dialog(app: &SmsWindow) -> Element<'_, SmsMessage> {
-    let spacing = cosmic::theme::active().cosmic().spacing;
-
-    // Left column: title, input, actions
-    let left = widget::Column::new()
-        .spacing(spacing.space_m)
-        .padding(spacing.space_l)
-        .push(
-            widget::text(fl!("sms-new-chat-title"))
-                .size(20)
-                .font(cosmic::font::bold()),
-        )
-        .push(
-            widget::Column::new()
-                .spacing(spacing.space_xs)
-                .push(widget::text(fl!("sms-new-chat-prompt")).size(14))
-                .push(
-                    widget::text_input(
-                        "e.g., +1-555-123-4567 or John Doe",
-                        &app.new_chat_phone_input,
-                    )
-                    .on_input(SmsMessage::UpdateNewChatPhone)
-                    .width(Length::Fill),
-                ),
-        )
-        .push(view_new_chat_actions(app, &spacing))
-        .width(Length::Fixed(340.0));
-
-    // Right column: contacts list
-    let right = widget::Column::new()
-        .spacing(spacing.space_s)
-        .padding(spacing.space_l)
-        .push(widget::text(fl!("sms-new-chat-contacts")).size(16).font(cosmic::font::bold()))
-        .push(view_contacts_list(app, &spacing))
-        .width(Length::Fill);
-
-    let content = widget::Row::new()
-        .push(left)
-        .push(widget::divider::vertical::default())
-        .push(right)
-        .height(Length::Fixed(500.0));
-
-    widget::container(content)
-        .class(cosmic::theme::Container::Card)
-        .width(Length::Fill)
-        .into()
-}
-
-fn view_new_chat_actions<'a>(
-    app: &'a SmsWindow,
-    spacing: &cosmic::cosmic_theme::Spacing,
-) -> Element<'a, SmsMessage> {
-    let start_button_enabled = !app.new_chat_phone_input.trim().is_empty();
-
-    widget::Row::new()
-        .spacing(spacing.space_xs)
-        .push(widget::button::standard(fl!("sms-new-chat-cancel")).on_press(SmsMessage::CloseNewChatDialog))
-        .push(widget::space::horizontal())
-        .push(if start_button_enabled {
-            widget::button::suggested(fl!("sms-new-chat-start")).on_press(SmsMessage::CreateNewChat)
-        } else {
-            widget::button::suggested(fl!("sms-new-chat-start"))
-        })
-        .into()
-}
-
-fn view_contacts_list<'a>(
-    app: &'a SmsWindow,
-    spacing: &cosmic::cosmic_theme::Spacing,
-) -> Element<'a, SmsMessage> {
-    if app.contacts.is_empty() {
-        return widget::text(fl!("sms-new-chat-no-contacts")).size(12).into();
-    }
-
-    let mut contacts_list = widget::Column::new().spacing(spacing.space_xxs);
-    let filtered_contacts = get_filtered_contacts(app);
-
-    if filtered_contacts.is_empty() {
-        contacts_list = contacts_list.push(widget::text(fl!("sms-new-chat-no-matches")).size(12));
-    } else {
-        for (phone, name) in filtered_contacts.iter() {
-            contacts_list = contacts_list.push(
-                widget::button::text(format!("{} ({})", name, phone))
-                    .on_press(SmsMessage::SelectContactForNewChat(
-                        phone.to_string(),
-                        name.to_string(),
-                    ))
-                    .width(Length::Fill),
-            );
-        }
-        contacts_list = contacts_list.push(
-            widget::container(
-                widget::text(fl!("sms-new-chat-showing", count = (filtered_contacts.len() as i64)))
-                .size(11),
+    widget::Container::new(
+        widget::Row::new()
+            .spacing(0)
+            .push(view_conversations_list(app, &spacing))
+            .push(
+                widget::container(widget::divider::vertical::default())
+                    .height(Length::Fill)
+                    .padding([0, spacing.space_xxs]),
             )
-            .padding([spacing.space_xs, 0, 0, 0]),
-        );
-    }
-
-    widget::scrollable(contacts_list)
-        .height(Length::Fill)
-        .into()
-}
-
-fn get_filtered_contacts(app: &SmsWindow) -> Vec<(&String, &String)> {
-    let mut sorted_contacts: Vec<_> = app.contacts.iter().collect();
-    sorted_contacts.sort_by(|a, b| a.1.cmp(b.1));
-
-    let search_term = app.new_chat_phone_input.trim().to_lowercase();
-
-    if search_term.is_empty() {
-        sorted_contacts
-    } else {
-        sorted_contacts
-            .into_iter()
-            .filter(|(phone, name)| {
-                name.to_lowercase().contains(&search_term)
-                    || phone.contains(&search_term)
-                    || normalize_phone_number(phone).contains(&normalize_phone_number(&search_term))
-            })
-            .collect()
-    }
+            .push(view_thread_panel(app, &spacing)),
+    )
+    .class(cosmic::theme::Container::Primary)
+    .max_width(1000.0)
+    .into()
 }
 
 /// Manually re-syncs conversations from the phone. `LoadConversations` was
@@ -239,27 +120,57 @@ fn view_conversations_list<'a>(
 ) -> Element<'a, SmsMessage> {
     let mut content = widget::Column::new().spacing(spacing.space_xs);
 
-    // Hamburger menu + Start Chat, right-aligned
-    content = content.push(
-        widget::container(
+    let contacts_by_name = app
+        .contacts
+        .iter()
+        .map(|(_p, name)| name.to_string())
+        .collect::<Vec<String>>();
+
+    let contacts_dropdown = widget::dropdown(
+        contacts_by_name,
+        app.contact_idx,
+        SmsMessage::SelectContactForNewChat,
+    )
+    .width(Length::Fill);
+
+    if app.contacts.is_empty() {
+        content = content
+            .push(widget::container(
+                widget::text(fl!("sms-new-chat-no-contacts"))
+                    .align_x(Alignment::Center)
+                    .width(Length::Fill)
+                    .size(12),
+            ))
+            .spacing(spacing.space_xs)
+            .padding(spacing.space_s)
+    } else {
+        let start_button_enabled = !app.new_chat_phone_input.trim().is_empty();
+
+        content = content.push(
             widget::Row::new()
-                .push(view_refresh_button())
-                .push(widget::space::horizontal())
+                .push(contacts_dropdown)
                 .push(
-                    widget::button::suggested(fl!("sms-new-chat-start"))
-                        .on_press(SmsMessage::OpenNewChatDialog)
-                        .class(crate::theme::accent_filled_button(app.accent_color)),
+                    widget::button::standard(fl!("sms-new-chat-cancel"))
+                        .on_press(SmsMessage::CloseNewChatDialog),
                 )
-                .align_y(Alignment::Center)
-                .spacing(spacing.space_xs),
-        )
-        .padding(spacing.space_s),
-    );
+                .push(
+                    widget::button::suggested(fl!("sms-new-chat-start")).on_press_maybe(
+                        if start_button_enabled {
+                            Some(SmsMessage::CreateNewChat)
+                        } else {
+                            None
+                        },
+                    ),
+                ),
+        );
+    }
 
     // Search input
     content = content.push(
-        widget::search_input(fl!("sms-search-placeholder"), &app.search_query)
-            .on_input(SmsMessage::UpdateSearch),
+        widget::Row::new().push(view_refresh_button()).push(
+            widget::search_input(fl!("sms-search-placeholder"), &app.search_query)
+                .on_input(SmsMessage::UpdateSearch),
+        ),
     );
     content = content.push(widget::divider::horizontal::default());
 
@@ -287,11 +198,17 @@ fn view_conversations_list<'a>(
                 .center_x(Length::Fill),
         );
     } else {
-        let mut list = widget::Column::new().spacing(0);
+        let mut list = widget::Column::new()
+            .spacing(0)
+            .padding(cosmic::iced::Padding {
+                top: 0.0,
+                bottom: 0.0,
+                left: 0.0,
+                right: 10.0,
+            });
 
         for conv in filtered {
             list = list.push(view_conversation_item(app, conv, spacing));
-            list = list.push(widget::divider::horizontal::light());
         }
 
         content = content.push(widget::scrollable(list).height(Length::Fill));
@@ -324,34 +241,6 @@ fn view_conversation_item<'a>(
 
     let display_name =
         get_contact_name(app, &conv.phone_number).unwrap_or_else(|| conv.phone_number.clone());
-
-    let accent = app.accent_color;
-    let flat_button_class = cosmic::theme::Button::Custom {
-        active: Box::new(move |focused, theme| {
-            let mut s = theme.active(focused, false, &cosmic::theme::Button::Text);
-            s.border_radius = cosmic::iced::Radius::from(0.0);
-            s.text_color = Some(accent);
-            s
-        }),
-        hovered: Box::new(move |focused, theme| {
-            let mut s = theme.hovered(focused, false, &cosmic::theme::Button::Text);
-            s.border_radius = cosmic::iced::Radius::from(0.0);
-            s.text_color = Some(accent);
-            s
-        }),
-        disabled: Box::new(|theme| {
-            let mut s = theme.disabled(&cosmic::theme::Button::Text);
-            s.border_radius = cosmic::iced::Radius::from(0.0);
-            s
-        }),
-        pressed: Box::new(move |focused, theme| {
-            let mut s = theme.pressed(focused, false, &cosmic::theme::Button::Text);
-            s.border_radius = cosmic::iced::Radius::from(0.0);
-            s.text_color = Some(accent);
-            s
-        }),
-    };
-
     let unread = is_conversation_unread(app, conv);
 
     let mut name_row = widget::Row::new()
@@ -363,56 +252,57 @@ fn view_conversation_item<'a>(
         .spacing(spacing.space_xs);
 
     if unread {
-        name_row = name_row.push(
-            widget::container(widget::Space::new().width(Length::Fixed(8.0)).height(Length::Fixed(8.0)))
-                .class(cosmic::theme::Container::custom(move |_theme| {
-                    cosmic::iced::widget::container::Style {
-                        background: Some(cosmic::iced::Background::Color(accent)),
-                        border: cosmic::iced::Border {
-                            radius: cosmic::iced::Radius::from(4.0),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }
-                })),
-        );
+        name_row = name_row.push(widget::container(
+            widget::Space::new()
+                .width(Length::Fixed(8.0))
+                .height(Length::Fixed(8.0)),
+        ));
     }
 
-    let button = widget::button::custom(
-        widget::Column::new()
-            .push(
-                name_row
-                    .push(widget::space::horizontal())
-                    .push(widget::text(format_timestamp(conv.timestamp)).size(11)),
-            )
-            .push(mixed_emoji_text(&truncate_preview(&conv.last_message, PREVIEW_MAX_CHARS), 12))
-            .spacing(spacing.space_xxs)
-            .padding(spacing.space_s),
-    )
-    .class(flat_button_class)
-    .on_press(SmsMessage::SelectThread(conv.thread_id.clone()))
-    .width(Length::Fill);
-
-    let row_content = if is_selected {
-        widget::container(button)
-            .class(cosmic::theme::Container::Primary)
-            .into()
-    } else {
-        Element::from(button)
-    };
-
-    let delete_button = widget::button::icon(widget::icon::from_name("user-trash-symbolic").handle())
-        .on_press(SmsMessage::RequestDeleteConversation(conv.thread_id.clone()));
+    let delete_button =
+        widget::button::icon(widget::icon::from_name("user-trash-symbolic").handle()).on_press(
+            SmsMessage::RequestDeleteConversation(conv.thread_id.clone()),
+        );
 
     let photo = get_contact_photo(app, &conv.phone_number);
 
-    widget::Row::new()
-        .push(widget::container(view_contact_avatar(photo, 32.0)).padding([0, spacing.space_xs, 0, spacing.space_s]))
-        .push(row_content)
-        .push(delete_button)
-        .align_y(Alignment::Center)
-        .width(Length::Fill)
-        .into()
+    let message_row = widget::Column::new()
+        .push(
+            name_row
+                .push(widget::space::horizontal())
+                .push(widget::text(format_timestamp(conv.timestamp)).size(11)),
+        )
+        .push(mixed_emoji_text(
+            &truncate_preview(&conv.last_message, PREVIEW_MAX_CHARS),
+            12,
+        ))
+        .spacing(spacing.space_xxs)
+        .padding(spacing.space_s);
+
+    let button = widget::button::custom(
+        widget::Row::new()
+            .push(
+                widget::container(view_contact_avatar(photo, 32.0)).padding([
+                    0,
+                    spacing.space_xs,
+                    0,
+                    spacing.space_s,
+                ]),
+            )
+            .push(message_row)
+            .push(delete_button)
+            .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .on_press(SmsMessage::SelectThread(conv.thread_id.clone()));
+
+    let row_content = if is_selected {
+        button.class(cosmic::theme::Button::MenuItem)
+    } else {
+        button.class(cosmic::theme::Button::MenuRoot)
+    };
+
+    row_content.into()
 }
 
 /// Thread panel (messages + input)
@@ -501,10 +391,7 @@ fn view_messages_list<'a>(
             widget::container(
                 widget::Column::new()
                     .push(widget::text(fl!("sms-waiting-for-messages")).size(14))
-                    .push(
-                        widget::text(fl!("sms-messages-will-appear"))
-                            .size(12),
-                    )
+                    .push(widget::text(fl!("sms-messages-will-appear")).size(12))
                     .spacing(spacing.space_xs)
                     .align_x(Alignment::Center),
             )
@@ -545,8 +432,9 @@ fn view_attachment<'a>(
     attachment: &'a super::models::MessageAttachment,
 ) -> Option<Element<'a, SmsMessage>> {
     if let Some(path) = &attachment.full_path {
-        let save_button = widget::button::icon(widget::icon::from_name("document-save-symbolic").handle())
-            .on_press(SmsMessage::SaveAttachment(path.clone()));
+        let save_button =
+            widget::button::icon(widget::icon::from_name("document-save-symbolic").handle())
+                .on_press(SmsMessage::SaveAttachment(path.clone()));
 
         return Some(if attachment.is_video() {
             widget::Row::new()
@@ -563,18 +451,22 @@ fn view_attachment<'a>(
                     widget::image(cosmic::widget::image::Handle::from_path(path))
                         .width(Length::Fixed(220.0)),
                 )
-                .push(widget::Row::new().push(widget::space::horizontal()).push(save_button))
+                .push(
+                    widget::Row::new()
+                        .push(widget::space::horizontal())
+                        .push(save_button),
+                )
                 .spacing(4)
                 .into()
         });
     }
 
     let preview: Element<'a, SmsMessage> = match attachment.thumbnail.as_deref() {
-        Some(thumbnail) if !thumbnail.is_empty() => {
-            widget::image(cosmic::widget::image::Handle::from_bytes(thumbnail.to_vec()))
-                .width(Length::Fixed(220.0))
-                .into()
-        }
+        Some(thumbnail) if !thumbnail.is_empty() => widget::image(
+            cosmic::widget::image::Handle::from_bytes(thumbnail.to_vec()),
+        )
+        .width(Length::Fixed(220.0))
+        .into(),
         _ => view_attachment_placeholder(attachment),
     };
 
@@ -696,11 +588,7 @@ fn view_message_input<'a>(
                 .padding(spacing.space_s)
                 .width(Length::Fill),
         )
-        .push(
-            widget::button::suggested(fl!("sms-send"))
-                .on_press(SmsMessage::SendMessage)
-                .class(crate::theme::accent_filled_button(app.accent_color))
-        )
+        .push(widget::button::suggested(fl!("sms-send")).on_press(SmsMessage::SendMessage))
         .spacing(spacing.space_xs)
         .align_y(Alignment::Center);
 
@@ -736,8 +624,10 @@ fn view_pending_attachments<'a>(
                 widget::Row::new()
                     .push(widget::text(name).size(12))
                     .push(
-                        widget::button::icon(widget::icon::from_name("window-close-symbolic").handle())
-                            .on_press(SmsMessage::RemovePendingAttachment(index)),
+                        widget::button::icon(
+                            widget::icon::from_name("window-close-symbolic").handle(),
+                        )
+                        .on_press(SmsMessage::RemovePendingAttachment(index)),
                     )
                     .spacing(spacing.space_xxs)
                     .align_y(Alignment::Center),
@@ -789,7 +679,9 @@ fn view_emoji_picker<'a>(
 
     let mut grid = widget::Column::new().spacing(spacing.space_xxs);
     for row_emojis in app.emoji_category.emojis().chunks(8) {
-        let mut row = widget::Row::new().spacing(spacing.space_xxs).width(Length::Fill);
+        let mut row = widget::Row::new()
+            .spacing(spacing.space_xxs)
+            .width(Length::Fill);
         for emoji in row_emojis {
             row = row.push(
                 widget::button::custom(
@@ -832,7 +724,10 @@ fn get_contact_name(app: &SmsWindow, phone_number: &str) -> Option<String> {
         .map(|(_, name)| name.clone())
 }
 
-fn get_contact_photo<'a>(app: &'a SmsWindow, phone_number: &str) -> Option<&'a super::avatar::Avatar> {
+fn get_contact_photo<'a>(
+    app: &'a SmsWindow,
+    phone_number: &str,
+) -> Option<&'a super::avatar::Avatar> {
     app.contact_photos
         .iter()
         .find(|(contact_phone, _)| phone_numbers_match(phone_number, contact_phone))
@@ -848,7 +743,10 @@ fn get_contact_photo<'a>(app: &'a SmsWindow, phone_number: &str) -> Option<&'a s
 /// elsewhere in this file, which *is* proven to render rounded — a
 /// rounded quad with no background/border to actually show is why the
 /// placeholder looked square before.
-fn view_contact_avatar<'a>(photo: Option<&'a super::avatar::Avatar>, size: f32) -> Element<'a, SmsMessage> {
+fn view_contact_avatar<'a>(
+    photo: Option<&'a super::avatar::Avatar>,
+    size: f32,
+) -> Element<'a, SmsMessage> {
     if let Some(avatar) = photo {
         return widget::image(cosmic::widget::image::Handle::from_rgba(
             avatar.width,

@@ -26,5 +26,5 @@ tracing = { workspace = true }
 mpris = { workspace = true }
 zbus = { workspace = true }
 libpulse-binding = { workspace = true }
-base64 = "0.22"
-tempfile = "3"
+base64 = "0.22.1"
+tempfile = "3.27.0"

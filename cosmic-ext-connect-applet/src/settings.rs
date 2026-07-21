@@ -1,7 +1,6 @@
 #[macro_use]
 extern crate cosmic_ext_connect_applet;
 
-use cosmic::widget::button::Catalog;
 use cosmic::{
     Action, Application, ApplicationExt, Element, Task,
     app::Core,
@@ -189,7 +188,6 @@ pub enum Message {
 
 pub struct SettingsApp {
     core: Core,
-    accent_color: cosmic::iced::Color,
     active_tab: Tab,
     devices: Vec<Device>,
     selected_device: Option<String>,
@@ -210,64 +208,6 @@ impl SettingsApp {
             .and_then(|map| map.get(plugin_id))
             .copied()
             .unwrap_or(true)
-    }
-
-    /// A track-and-handle switch drawn from two styled containers, so its
-    /// "on" colour can follow the real host accent instead of the
-    /// sandboxed-teal `widget::toggler` default (see theme.rs).
-    fn plugin_toggle<'a>(&self, enabled: bool, plugin_id: String) -> Element<'a, Message> {
-        const TRACK_W: f32 = 40.0;
-        const TRACK_H: f32 = 22.0;
-        const HANDLE: f32 = 16.0;
-        const OFF_TRACK: cosmic::iced::Color = cosmic::iced::Color {
-            r: 0.5,
-            g: 0.5,
-            b: 0.5,
-            a: 0.35,
-        };
-
-        let track_color = if enabled { self.accent_color } else { OFF_TRACK };
-
-        let handle = widget::container(widget::Space::new())
-            .width(Length::Fixed(HANDLE))
-            .height(Length::Fixed(HANDLE))
-            .class(cosmic::theme::Container::custom(move |_theme| {
-                cosmic::iced::widget::container::Style {
-                    background: Some(cosmic::iced::Background::Color(cosmic::iced::Color::WHITE)),
-                    border: cosmic::iced::Border {
-                        radius: cosmic::iced::Radius::from(HANDLE / 2.0),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            }));
-
-        let track = widget::container(handle)
-            .width(Length::Fixed(TRACK_W))
-            .height(Length::Fixed(TRACK_H))
-            .padding(3.0)
-            .align_y(Alignment::Center)
-            .align_x(if enabled {
-                Alignment::End
-            } else {
-                Alignment::Start
-            })
-            .class(cosmic::theme::Container::custom(move |_theme| {
-                cosmic::iced::widget::container::Style {
-                    background: Some(cosmic::iced::Background::Color(track_color)),
-                    border: cosmic::iced::Border {
-                        radius: cosmic::iced::Radius::from(TRACK_H / 2.0),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            }));
-
-        widget::button::custom(track)
-            .class(cosmic::theme::Button::Text)
-            .padding(0)
-            .on_press(Message::TogglePlugin(plugin_id, !enabled))
-            .into()
     }
 
     fn default_plugin_map() -> HashMap<String, bool> {
@@ -312,8 +252,6 @@ impl Application for SettingsApp {
     fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Action<Self::Message>>) {
         let mut app = Self {
             core,
-            accent_color: cosmic_ext_connect_applet::theme::try_load_cosmic_accent()
-               .unwrap_or(cosmic_ext_connect_applet::theme::FALLBACK_TEAL),
             active_tab: Tab::PairedDevices,
             devices: Vec::new(),
             selected_device: None,
@@ -569,7 +507,7 @@ impl SettingsApp {
         } else {
             widget::button::text(fl!("settings-tab-paired"))
                 .on_press(Message::SelectTab(Tab::PairedDevices))
-                .class(cosmic_ext_connect_applet::theme::accent_link_button(self.accent_color))
+                .class(cosmic::theme::Button::Link)
         };
 
         let available_btn = if self.active_tab == Tab::AvailableDevices {
@@ -578,7 +516,7 @@ impl SettingsApp {
         } else {
             widget::button::text(fl!("settings-tab-available"))
                 .on_press(Message::SelectTab(Tab::AvailableDevices))
-                .class(cosmic_ext_connect_applet::theme::accent_link_button(self.accent_color))
+                .class(cosmic::theme::Button::Link)
         };
 
         widget::Row::new()
@@ -630,7 +568,7 @@ impl SettingsApp {
                 let item = widget::Row::new()
                     .spacing(spacing.space_s)
                     .align_y(Alignment::Center)
-                    .push(widget::icon(cosmic_ext_connect_applet::theme::accent_icon(device.device_icon(), self.accent_color)).size(20))
+                    .push(widget::icon::from_name(device.device_icon()).size(20))
                     .push(
                         widget::Column::new()
                             .spacing(2)
@@ -645,46 +583,16 @@ impl SettingsApp {
                             )
                             .width(Length::Fill),
                     )
-                    .push(widget::icon(cosmic_ext_connect_applet::theme::accent_icon(status_icon, self.accent_color)).size(14));
-
-                let accent = self.accent_color;
-                let btn = widget::button::custom(item)
-                    .class(cosmic::theme::Button::Custom {
-                        active: Box::new(move |focused, theme| {
-                            let mut s = theme.active(focused, false, &cosmic::theme::Button::Text);
-                            s.border_radius = cosmic::iced::Radius::from(0.0);
-                            s.text_color = Some(accent);
-                            s
-                        }),
-                        hovered: Box::new(move |focused, theme| {
-                            let mut s = theme.hovered(focused, false, &cosmic::theme::Button::Text);
-                            s.border_radius = cosmic::iced::Radius::from(0.0);
-                            s.text_color = Some(accent);
-                            s
-                        }),
-                        disabled: Box::new(|theme| {
-                            let mut s = theme.disabled(&cosmic::theme::Button::Text);
-                            s.border_radius = cosmic::iced::Radius::from(0.0);
-                            s
-                        }),
-                        pressed: Box::new(move |focused, theme| {
-                            let mut s = theme.pressed(focused, false, &cosmic::theme::Button::Text);
-                            s.border_radius = cosmic::iced::Radius::from(0.0);
-                            s.text_color = Some(accent);
-                            s
-                        }),
-                    })
-                    .on_press(Message::SelectDevice(device_id))
-                    .width(Length::Fill);
+                    .push(widget::icon::from_name(status_icon).size(14));
 
                 if is_selected {
                     col = col.push(
-                        widget::container(btn)
+                        widget::container(widget::button::custom(item).width(Length::Fill).on_press(Message::SelectDevice(device_id)).class(cosmic::theme::Button::Suggested))
                             .class(cosmic::theme::Container::Primary)
                             .width(Length::Fill),
                     );
                 } else {
-                    col = col.push(btn);
+                    col = col.push(widget::button::custom(item).class(cosmic::theme::Button::Standard).on_press(Message::SelectDevice(device_id)));
                 }
             }
         }
@@ -765,7 +673,7 @@ impl SettingsApp {
                         .push(widget::text(plugin.description.as_str()).size(12))
                         .width(Length::Fill),
                 )
-                .push(self.plugin_toggle(enabled, plugin_id));
+                .push(widget::toggler(enabled).on_toggle(move |f| Message::TogglePlugin(plugin_id.clone(), f)));
 
             col = col.push(
                 widget::container(row)
@@ -862,7 +770,6 @@ impl SettingsApp {
                     } else {
                         widget::button::suggested(fl!("available-devices-pair"))
                             .on_press(Message::PairDevice(device_id))
-                            .class(cosmic_ext_connect_applet::theme::accent_filled_button(self.accent_color))
                     });
 
                 col = col.push(
@@ -936,7 +843,6 @@ impl SettingsApp {
         col = col.push(
             widget::button::suggested(fl!("run-commands-add-button"))
                 .on_press(Message::AddRunCommand)
-                .class(cosmic_ext_connect_applet::theme::accent_filled_button(self.accent_color)),
         );
 
         widget::container(col)
@@ -948,10 +854,7 @@ impl SettingsApp {
 }
 
 fn main() -> cosmic::iced::Result {
-    let mut settings = cosmic::app::Settings::default()
+    let settings = cosmic::app::Settings::default()
         .size(cosmic::iced::Size::new(740.0, 540.0));
-    if let Some(theme) = cosmic_ext_connect_applet::theme::try_load_cosmic_theme() {
-        settings = settings.theme(theme);
-    }
     cosmic::app::run::<SettingsApp>(settings, ())
 }

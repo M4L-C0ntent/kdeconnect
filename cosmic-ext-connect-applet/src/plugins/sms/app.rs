@@ -20,18 +20,18 @@ use super::views;
 
 pub struct SmsWindow {
     core: Core,
-    pub accent_color: cosmic::iced::Color,
     pub device_id: String,
     #[allow(dead_code)]
     pub device_name: String,
     pub conversations: Vec<Conversation>,
-    pub contacts: HashMap<String, String>,
+    pub contacts: Vec<(String, String)>,
     /// Phone -> baked circular avatar, parsed from vcard PHOTO
     /// properties. Missing entry (not an empty one) means "no photo
     /// available, show the default placeholder" — see
     /// `views::view_contact_avatar`.
     pub contact_photos: HashMap<String, Avatar>,
     pub selected_thread: Option<String>,
+    pub contact_idx: Option<usize>,
     pub messages: Vec<Message>,
     pub message_input: String,
     pub search_query: String,
@@ -75,14 +75,13 @@ impl Application for SmsWindow {
 
         let mut app = Self {
             core,
-            accent_color: crate::theme::try_load_cosmic_accent()
-                .unwrap_or(crate::theme::FALLBACK_TEAL),
             device_id: device_id.clone(),
             device_name: device_name.clone(),
             conversations: Vec::new(),
-            contacts: HashMap::new(),
+            contacts: Vec::new(),
             contact_photos: HashMap::new(),
             selected_thread: None,
+	    contact_idx: Some(0),
             messages: Vec::new(),
             message_input: String::new(),
             search_query: String::new(),
@@ -245,7 +244,8 @@ impl Application for SmsWindow {
             }
             SmsMessage::ContactsLoaded(contacts) => {
                 debug!("ContactsLoaded: {} contacts", contacts.len());
-                self.contacts = contacts;
+		let sorted = utils::sort_cached_contacts(contacts);
+                self.contacts = sorted;
                 self.update_conversation_names();
             }
             SmsMessage::ContactPhotosLoaded(photos) => {
@@ -471,8 +471,9 @@ impl Application for SmsWindow {
             SmsMessage::UpdateNewChatPhone(phone) => {
                 self.new_chat_phone_input = phone;
             }
-            SmsMessage::SelectContactForNewChat(phone, _name) => {
-                self.new_chat_phone_input = phone;
+            SmsMessage::SelectContactForNewChat(idx) => {
+		self.new_chat_phone_input = self.contacts[idx].0.clone();
+		self.contact_idx = Some(idx);
             }
             SmsMessage::CreateNewChat => {
                 let phone = self.new_chat_phone_input.trim().to_string();
@@ -539,15 +540,11 @@ impl Application for SmsWindow {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let content = if self.show_new_chat_dialog {
-            views::view_new_chat_dialog(self)
-        } else {
-            views::view_main(self)
-        };
-        widget::container(content)
+        widget::container(views::view_main(self))
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .align_x(cosmic::iced::Alignment::Center)
+	    .into()
     }
 }
 
